@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Casuya Blackboard — Industrial Grade</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f1f5f9;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+    }
+    h1 {
+      font-size: 20px;
+      color: #1e293b;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 20px;
+    }
+    #app {
+      width: 100%;
+      max-width: 900px;
+    }
+    .features {
+      display: flex;
+      gap: 12px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .feature {
+      background: white;
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #475569;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .feature strong { color: #1e293b; }
+  </style>
+</head>
+<body>
+  <h1>Casuya Blackboard</h1>
+  <p class="subtitle">Industrial-grade drawing for education — powered by perfect-freehand</p>
+  <div id="app"></div>
+  <div class="features">
+    <div class="feature"><strong>Pen</strong> — Velocity-based pressure</div>
+    <div class="feature"><strong>Shapes</strong> — Line, Rect, Circle, Arrow</div>
+    <div class="feature"><strong>Graph</strong> — Toggle coordinate axes</div>
+    <div class="feature"><strong>Undo</strong> — Ctrl+Z / Ctrl+Shift+Z</div>
+    <div class="feature"><strong>Save</strong> — localStorage persistence</div>
+    <div class="feature"><strong>23KB</strong> — Fast on 2G networks</div>
+  </div>
+  <script type="module">
+    import { Blackboard } from './dist/index.js';
+    const board = new Blackboard({
+      container: document.getElementById('app'),
+      width: 880,
+      height: 560,
+    });
+  </script>
+</body>
+</html>
