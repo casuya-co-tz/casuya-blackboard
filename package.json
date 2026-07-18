@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "description": "Interactive digital blackboard with stylus input, step-by-step math validation, and handwriting recognition for the Casuya educational platform",
   "type": "module",
-  "main": "src/index.ts",
-  "module": "src/index.ts",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
