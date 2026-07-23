@@ -25,6 +25,7 @@ export interface Shape {
   width: number;
   opacity: number;
   createdAt?: number;
+  filled?: boolean;
 }
 
 export interface GraphConfig {

@@ -29,6 +29,10 @@
       width: 100%;
       max-width: 900px;
     }
+    @media (max-width: 920px) {
+      body { padding: 12px; }
+      #app { overflow-x: auto; }
+    }
     .features {
       display: flex;
       gap: 12px;
@@ -52,12 +56,12 @@
   <p class="subtitle">Industrial-grade drawing for education — powered by perfect-freehand</p>
   <div id="app"></div>
   <div class="features">
-    <div class="feature"><strong>Pen</strong> — Velocity-based pressure</div>
-    <div class="feature"><strong>Shapes</strong> — Line, Rect, Circle, Arrow</div>
-    <div class="feature"><strong>Graph</strong> — Toggle coordinate axes</div>
-    <div class="feature"><strong>Undo</strong> — Ctrl+Z / Ctrl+Shift+Z</div>
-    <div class="feature"><strong>Save</strong> — localStorage persistence</div>
-    <div class="feature"><strong>23KB</strong> — Fast on 2G networks</div>
+    <div class="feature" title="Draw freehand strokes with velocity-sensitive pressure simulation"><strong>Pen</strong> — Velocity-based pressure</div>
+    <div class="feature" title="Draw lines, rectangles, circles, and arrows"><strong>Shapes</strong> — Line, Rect, Circle, Arrow</div>
+    <div class="feature" title="Toggle a coordinate grid with labeled axes for math use"><strong>Graph</strong> — Toggle coordinate axes</div>
+    <div class="feature" title="Press Ctrl+Z to undo, Ctrl+Shift+Z to redo"><strong>Undo</strong> — Ctrl+Z / Ctrl+Shift+Z</div>
+    <div class="feature" title="Your drawings are automatically saved in your browser"><strong>Save</strong> — localStorage persistence</div>
+    <div class="feature" title="The library is only 23KB gzipped — fast even on slow connections"><strong>23KB</strong> — Fast on 2G networks</div>
   </div>
   <script type="module">
     import { Blackboard } from './dist/index.js';

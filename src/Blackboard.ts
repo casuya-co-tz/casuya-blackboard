@@ -24,8 +24,10 @@ export interface ToolbarElements {
   undoBtn: HTMLButtonElement;
   redoBtn: HTMLButtonElement;
   graphBtn: HTMLButtonElement;
+  fillBtn: HTMLButtonElement;
   widthLabel: HTMLSpanElement;
   widthDot: HTMLDivElement;
+  colorInput: HTMLInputElement;
 }
 
 export class Blackboard {
@@ -44,6 +46,7 @@ export class Blackboard {
   private strokeColor = '#1e293b';
   private strokeWidth = 2;
   private strokeOpacity = 1;
+  private fillEnabled = false;
 
   private elements: Element[] = [];
   private undoStack: Element[] = [];
@@ -118,7 +121,8 @@ export class Blackboard {
     this.setupCanvases();
     this.attachEvents();
     this.renderStatic();
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
+    setTimeout(() => this.showToast('Select a tool and start drawing'), 600);
   }
 
   private setupCanvases(): void {
@@ -180,6 +184,7 @@ export class Blackboard {
         color: this.strokeColor,
         width: this.strokeWidth,
         opacity: this.strokeOpacity,
+        filled: this.fillEnabled,
       };
     }
   };
@@ -222,7 +227,7 @@ export class Blackboard {
     this.currentElement = null;
     this.flushLive();
     this.renderStatic();
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
     this.emit('change');
   };
 
@@ -255,6 +260,13 @@ export class Blackboard {
     ctx.fillRect(0, 0, this.width, this.height);
     if (this.graph.enabled) this.drawGraph(ctx);
     for (const el of this.elements) this.drawElement(ctx, el);
+    if (this.elements.length === 0 && !this.currentElement) {
+      ctx.fillStyle = '#cbd5e1';
+      ctx.font = '14px system-ui, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Choose a tool and start drawing', this.width / 2, this.height / 2);
+    }
   }
 
   private drawGraph(ctx: CanvasRenderingContext2D): void {
@@ -351,17 +363,33 @@ export class Blackboard {
         ctx.lineTo(end.x, end.y);
         ctx.stroke();
         break;
-      case 'rect':
-        ctx.strokeRect(
-          Math.min(start.x, end.x), Math.min(start.y, end.y),
-          Math.abs(end.x - start.x), Math.abs(end.y - start.y)
-        );
+      case 'rect': {
+        const rx = Math.min(start.x, end.x);
+        const ry = Math.min(start.y, end.y);
+        const rw = Math.abs(end.x - start.x);
+        const rh = Math.abs(end.y - start.y);
+        if (shape.filled) {
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.25;
+          ctx.fillRect(rx, ry, rw, rh);
+          ctx.globalAlpha = shape.opacity;
+        }
+        ctx.strokeRect(rx, ry, rw, rh);
         break;
+      }
       case 'circle': {
         const cx = (start.x + end.x) / 2;
         const cy = (start.y + end.y) / 2;
+        const rx = Math.abs(end.x - start.x) / 2;
+        const ry = Math.abs(end.y - start.y) / 2;
         ctx.beginPath();
-        ctx.ellipse(cx, cy, Math.abs(end.x - start.x) / 2, Math.abs(end.y - start.y) / 2, 0, 0, Math.PI * 2);
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        if (shape.filled) {
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.25;
+          ctx.fill();
+          ctx.globalAlpha = shape.opacity;
+        }
         ctx.stroke();
         break;
       }
@@ -390,7 +418,7 @@ export class Blackboard {
   setTool(tool: Tool): void {
     this.activeTool = tool;
     this.liveCanvas.style.cursor = tool === 'eraser' ? 'cell' : 'crosshair';
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
     this.emit('toolchange');
   }
 
@@ -400,7 +428,7 @@ export class Blackboard {
 
   setColor(color: string): void {
     this.strokeColor = color;
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
   }
 
   getColor(): string {
@@ -409,11 +437,20 @@ export class Blackboard {
 
   setWidth(width: number): void {
     this.strokeWidth = Math.max(1, Math.min(50, width));
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
   }
 
   getWidth(): number {
     return this.strokeWidth;
+  }
+
+  setFill(enabled: boolean): void {
+    this.fillEnabled = enabled;
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
+  }
+
+  getFill(): boolean {
+    return this.fillEnabled;
   }
 
   enableGraph(options?: Partial<GraphConfig>): void {
@@ -430,7 +467,7 @@ export class Blackboard {
     if (this.elements.length === 0) return;
     this.undoStack.push(this.elements.pop()!);
     this.renderStatic();
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
     this.emit('undo');
     this.emit('change');
   }
@@ -439,7 +476,7 @@ export class Blackboard {
     if (this.undoStack.length === 0) return;
     this.elements.push(this.undoStack.pop()!);
     this.renderStatic();
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
     this.emit('redo');
     this.emit('change');
   }
@@ -450,7 +487,7 @@ export class Blackboard {
     this.currentElement = null;
     this.renderStatic();
     this.flushLive();
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled);
     this.emit('clear');
     this.emit('change');
   }
@@ -532,6 +569,23 @@ export class Blackboard {
       this.importJSON(JSON.parse(raw));
       return true;
     } catch { return false; }
+  }
+
+  showToast(msg: string): void {
+    const toast = document.createElement('div');
+    toast.textContent = msg;
+    toast.style.cssText = `
+      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; color: white; padding: 8px 16px; border-radius: 8px;
+      font-size: 13px; z-index: 100; pointer-events: none; white-space: nowrap;
+      animation: fadeInOut 2s ease forwards;
+    `;
+    const style = document.createElement('style');
+    style.textContent = `@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 15% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`;
+    toast.appendChild(style);
+    this.root.appendChild(style);
+    this.root.appendChild(toast);
+    setTimeout(() => { toast.remove(); style.remove(); }, 2000);
   }
 
   destroy(): void {

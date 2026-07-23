@@ -15,133 +15,223 @@ const COLORS = [
   '#ca8a04', '#9333ea', '#ea580c', '#0891b2',
 ];
 
-const TOOL_TITLES: Record<Tool, string> = {
+const TOOL_LABELS: Record<Tool, string> = {
   pen: 'Pen',
   line: 'Line',
-  rect: 'Rectangle',
+  rect: 'Rect',
   circle: 'Circle',
   arrow: 'Arrow',
   eraser: 'Eraser',
 };
 
+const TOOL_DESCRIPTIONS: Record<Tool, string> = {
+  pen: 'Freehand drawing with pressure sensitivity',
+  line: 'Draw a straight line',
+  rect: 'Draw a rectangle (toggle fill for solid shapes)',
+  circle: 'Draw an ellipse (toggle fill for solid shapes)',
+  arrow: 'Draw an arrow',
+  eraser: 'Erase parts of your drawing',
+};
+
+const TOOLBAR_STYLES = `
+.casuya-toolbar-sep { width: 1px; height: 32px; background: #e2e8f0; margin: 0 6px; flex-shrink: 0; }
+.casuya-toolbar-btn {
+  min-width: 48px; height: 48px; border: 2px solid transparent; border-radius: 8px;
+  background: transparent; cursor: pointer; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px; padding: 4px 6px;
+  color: #64748b; transition: all 0.15s ease; font-family: inherit;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.casuya-toolbar-btn:hover { background: #e2e8f0; color: #334155; }
+.casuya-toolbar-btn:active { transform: scale(0.95); }
+.casuya-toolbar-btn svg { flex-shrink: 0; }
+.casuya-toolbar-label {
+  font-size: 9px; line-height: 1; color: inherit; letter-spacing: 0.02em;
+  max-width: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.casuya-action-btn {
+  width: 40px; height: 40px; border: none; border-radius: 8px;
+  background: transparent; cursor: pointer; display: flex;
+  align-items: center; justify-content: center;
+  font-size: 16px; color: #64748b; transition: all 0.15s ease; flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.casuya-action-btn:hover { background: #e2e8f0; color: #334155; }
+.casuya-action-btn:active { transform: scale(0.95); }
+.casuya-swatch {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid transparent; cursor: pointer;
+  transition: all 0.15s ease; padding: 0; flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+}
+.casuya-swatch:active { transform: scale(0.9); }
+.casuya-color-picker {
+  width: 28px; height: 28px; border: none; border-radius: 50%; padding: 0;
+  cursor: pointer; flex-shrink: 0; overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+.casuya-color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+.casuya-color-picker::-webkit-color-swatch { border: 2px solid #e2e8f0; border-radius: 50%; }
+.casuya-tooltip {
+  width: 100%; padding: 6px 10px; font-size: 11px; color: #64748b;
+  background: #f1f5f9; border-top: 1px solid #e2e8f0; min-height: 28px;
+  box-sizing: border-box; line-height: 1.4;
+}
+.casuya-tooltip:empty { display: none; }
+@media (max-width: 640px) {
+  .casuya-toolbar-btn { min-width: 44px; height: 44px; padding: 3px 4px; }
+  .casuya-toolbar-label { font-size: 8px; max-width: 40px; }
+  .casuya-action-btn { width: 36px; height: 36px; font-size: 14px; }
+  .casuya-swatch { width: 24px; height: 24px; }
+  .casuya-color-picker { width: 24px; height: 24px; }
+}
+`;
+
+function injectStyles(): void {
+  if (document.getElementById('casuya-toolbar-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'casuya-toolbar-styles';
+  style.textContent = TOOLBAR_STYLES;
+  document.head.appendChild(style);
+}
+
 function sep(): HTMLDivElement {
   const s = document.createElement('div');
-  s.style.cssText = 'width: 1px; height: 28px; background: #e2e8f0; margin: 0 4px;';
+  s.className = 'casuya-toolbar-sep';
   return s;
 }
 
-function actionBtn(icon: string, title: string, onClick: () => void): HTMLButtonElement {
-  const btn = document.createElement('button');
-  btn.textContent = icon;
-  btn.title = title;
-  btn.style.cssText = `
-    width: 34px; height: 34px; border: none; border-radius: 8px;
-    background: transparent; cursor: pointer; display: flex;
-    align-items: center; justify-content: center;
-    font-size: 15px; color: #64748b; transition: all 0.15s ease;
-  `;
-  btn.addEventListener('mouseenter', () => { btn.style.background = '#e2e8f0'; btn.style.color = '#334155'; });
-  btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; btn.style.color = '#64748b'; });
-  btn.addEventListener('click', onClick);
-  return btn;
-}
-
 export function createToolbar(board: Blackboard): ToolbarElements {
+  injectStyles();
+
   const bar = document.createElement('div');
   bar.style.cssText = `
-    display: flex; align-items: center; gap: 6px;
-    padding: 8px 12px; background: #f8fafc;
-    border-bottom: 1px solid #e2e8f0; flex-wrap: wrap;
+    display: flex; flex-direction: column; background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
   `;
+
+  const row = document.createElement('div');
+  row.style.cssText = `
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; flex-wrap: wrap;
+  `;
+
+  const tooltipEl = document.createElement('div');
+  tooltipEl.className = 'casuya-tooltip';
 
   const toolButtons = new Map<Tool, HTMLButtonElement>();
   const toolGroup = document.createElement('div');
-  toolGroup.style.cssText = 'display: flex; gap: 4px;';
+  toolGroup.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap;';
 
   for (const tool of ['pen', 'line', 'rect', 'circle', 'arrow', 'eraser'] as Tool[]) {
     const btn = document.createElement('button');
-    btn.innerHTML = TOOL_ICONS[tool];
-    btn.title = TOOL_TITLES[tool];
-    btn.style.cssText = `
-      width: 36px; height: 36px; border: 2px solid transparent; border-radius: 8px;
-      background: transparent; cursor: pointer; display: flex;
-      align-items: center; justify-content: center; color: #64748b;
-      transition: all 0.15s ease;
-    `;
+    btn.className = 'casuya-toolbar-btn';
+    btn.innerHTML = `${TOOL_ICONS[tool]}<span class="casuya-toolbar-label">${TOOL_LABELS[tool]}</span>`;
     btn.addEventListener('mouseenter', () => {
       if (board.getTool() !== tool) { btn.style.background = '#e2e8f0'; btn.style.color = '#334155'; }
+      tooltipEl.textContent = TOOL_DESCRIPTIONS[tool];
     });
     btn.addEventListener('mouseleave', () => {
       if (board.getTool() !== tool) { btn.style.background = 'transparent'; btn.style.color = '#64748b'; }
+      tooltipEl.textContent = '';
     });
+    btn.addEventListener('focus', () => { tooltipEl.textContent = TOOL_DESCRIPTIONS[tool]; });
+    btn.addEventListener('blur', () => { tooltipEl.textContent = ''; });
     btn.addEventListener('click', () => board.setTool(tool));
     toolButtons.set(tool, btn);
     toolGroup.appendChild(btn);
   }
-  bar.appendChild(toolGroup);
-  bar.appendChild(sep());
+  row.appendChild(toolGroup);
+  row.appendChild(sep());
 
   const colorGroup = document.createElement('div');
-  colorGroup.style.cssText = 'display: flex; gap: 4px; align-items: center;';
+  colorGroup.style.cssText = 'display: flex; gap: 4px; align-items: center; flex-wrap: wrap;';
   for (const color of COLORS) {
     const swatch = document.createElement('button');
+    swatch.className = 'casuya-swatch';
     swatch.dataset.color = color;
-    swatch.style.cssText = `
-      width: 24px; height: 24px; border-radius: 50%;
-      border: 2px solid transparent; background: ${color};
-      cursor: pointer; transition: all 0.15s ease; padding: 0;
-    `;
+    swatch.style.background = color;
     swatch.addEventListener('mouseenter', () => { swatch.style.transform = 'scale(1.2)'; });
     swatch.addEventListener('mouseleave', () => { swatch.style.transform = 'scale(1)'; });
-    swatch.addEventListener('click', () => board.setColor(color));
+    swatch.addEventListener('click', () => {
+      board.setColor(color);
+      colorInput.value = color;
+    });
     colorGroup.appendChild(swatch);
   }
-  bar.appendChild(colorGroup);
-  bar.appendChild(sep());
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.className = 'casuya-color-picker';
+  colorInput.value = board.getColor();
+  colorInput.title = 'Custom color';
+  colorInput.addEventListener('input', () => board.setColor(colorInput.value));
+  colorGroup.appendChild(colorInput);
+  row.appendChild(colorGroup);
+  row.appendChild(sep());
 
   const widthGroup = document.createElement('div');
   widthGroup.style.cssText = 'display: flex; align-items: center; gap: 8px;';
   const widthLabel = document.createElement('span');
-  widthLabel.style.cssText = 'font-size: 12px; color: #64748b; min-width: 24px; text-align: center;';
+  widthLabel.style.cssText = 'font-size: 11px; color: #64748b; min-width: 22px; text-align: center;';
   const slider = document.createElement('input');
   slider.type = 'range'; slider.min = '1'; slider.max = '20';
   slider.value = String(board.getWidth());
-  slider.style.cssText = 'width: 80px; height: 4px; -webkit-appearance: none; appearance: none; background: #e2e8f0; border-radius: 2px; outline: none; cursor: pointer;';
+  slider.style.cssText = 'width: 72px; height: 4px; -webkit-appearance: none; appearance: none; background: #e2e8f0; border-radius: 2px; outline: none; cursor: pointer;';
   slider.addEventListener('input', () => board.setWidth(Number(slider.value)));
   const widthPreview = document.createElement('div');
-  widthPreview.style.cssText = 'width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;';
+  widthPreview.style.cssText = 'width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;';
   const widthDot = document.createElement('div');
   widthDot.style.cssText = `background: ${board.getColor()}; border-radius: 50%; transition: all 0.15s ease;`;
   widthPreview.appendChild(widthDot);
   widthGroup.appendChild(widthLabel);
   widthGroup.appendChild(slider);
   widthGroup.appendChild(widthPreview);
-  bar.appendChild(widthGroup);
-  bar.appendChild(sep());
+  row.appendChild(widthGroup);
+  row.appendChild(sep());
 
-  const undoBtn = actionBtn('↩', 'Undo (Ctrl+Z)', () => board.undo());
-  const redoBtn = actionBtn('↪', 'Redo (Ctrl+Shift+Z)', () => board.redo());
-  const clearBtn = actionBtn('✕', 'Clear all', () => board.clear());
-  const graphBtn = actionBtn('⊞', 'Toggle graph paper', () => {
+  const undoBtn = createActionBtn('\u21A9', 'Undo (Ctrl+Z)', tooltipEl, () => board.undo());
+  const redoBtn = createActionBtn('\u21AA', 'Redo (Ctrl+Shift+Z)', tooltipEl, () => board.redo());
+  const clearBtn = createActionBtn('\u2715', 'Clear all', tooltipEl, () => board.clear());
+  const graphBtn = createActionBtn('\u229E', 'Toggle graph paper', tooltipEl, () => {
     const b = board as any;
     if (b.graph?.enabled) { board.disableGraph(); graphBtn.style.background = 'transparent'; graphBtn.style.color = '#64748b'; }
     else { board.enableGraph(); graphBtn.style.background = '#dbeafe'; graphBtn.style.color = '#2563eb'; }
   });
-  const saveBtn = actionBtn('↓', 'Save to browser', () => { board.saveToStorage(); showToast(board); });
+  const saveBtn = createActionBtn('\u2193', 'Save to browser', tooltipEl, () => { board.saveToStorage(); board.showToast('\u2713 Saved'); });
+  const fillBtn = createActionBtn('\u25A3', 'Fill: off', tooltipEl, () => {
+    board.setFill(!board.getFill());
+  });
 
   const actionGroup = document.createElement('div');
-  actionGroup.style.cssText = 'display: flex; gap: 4px;';
+  actionGroup.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap;';
   actionGroup.appendChild(undoBtn);
   actionGroup.appendChild(redoBtn);
   actionGroup.appendChild(clearBtn);
   actionGroup.appendChild(graphBtn);
   actionGroup.appendChild(saveBtn);
-  bar.appendChild(actionGroup);
+  actionGroup.appendChild(fillBtn);
+  row.appendChild(actionGroup);
 
-  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, widthLabel, widthDot };
+  bar.appendChild(row);
+  bar.appendChild(tooltipEl);
+
+  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, widthLabel, widthDot, colorInput };
 }
 
-export function updateToolbarState(tb: ToolbarElements, activeTool: Tool, color: string, width: number): void {
+function createActionBtn(icon: string, title: string, tooltipEl: HTMLDivElement, onClick: () => void): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = 'casuya-action-btn';
+  btn.textContent = icon;
+  btn.title = title;
+  btn.addEventListener('mouseenter', () => { tooltipEl.textContent = title; });
+  btn.addEventListener('mouseleave', () => { tooltipEl.textContent = ''; });
+  btn.addEventListener('focus', () => { tooltipEl.textContent = title; });
+  btn.addEventListener('blur', () => { tooltipEl.textContent = ''; });
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+export function updateToolbarState(tb: ToolbarElements, activeTool: Tool, color: string, width: number, fillEnabled: boolean): void {
   for (const [tool, btn] of tb.toolButtons) {
     const active = tool === activeTool;
     btn.style.background = active ? '#dbeafe' : 'transparent';
@@ -152,22 +242,14 @@ export function updateToolbarState(tb: ToolbarElements, activeTool: Tool, color:
   tb.widthDot.style.background = color;
   tb.widthDot.style.width = `${Math.max(4, width)}px`;
   tb.widthDot.style.height = `${Math.max(4, width)}px`;
-}
-
-function showToast(board: Blackboard): void {
-  const root = (board as any).root as HTMLElement;
-  const toast = document.createElement('div');
-  toast.textContent = '✓ Saved';
-  toast.style.cssText = `
-    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-    background: #1e293b; color: white; padding: 8px 16px; border-radius: 8px;
-    font-size: 13px; font-family: system-ui; z-index: 100;
-    animation: fadeInOut 2s ease forwards;
-  `;
-  const style = document.createElement('style');
-  style.textContent = `@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 15% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`;
-  toast.appendChild(style);
-  root.appendChild(style);
-  root.appendChild(toast);
-  setTimeout(() => { toast.remove(); style.remove(); }, 2000);
+  tb.colorInput.value = color;
+  if (fillEnabled) {
+    tb.fillBtn.style.background = '#dbeafe';
+    tb.fillBtn.style.color = '#2563eb';
+    tb.fillBtn.title = 'Fill: on';
+  } else {
+    tb.fillBtn.style.background = 'transparent';
+    tb.fillBtn.style.color = '#64748b';
+    tb.fillBtn.title = 'Fill: off';
+  }
 }
