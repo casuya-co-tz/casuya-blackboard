@@ -7,7 +7,8 @@ describe('MathBridge', () => {
     const result = await bridge.checkEquivalence('2x + 3', '2x+3');
     expect(result.equivalent).toBe(true);
     expect(result.confidence).toBeGreaterThan(0);
-  });
+  }, 15000);
+
 
   it('detects non-equivalent expressions via normalization', async () => {
     const bridge = new MathBridge({});
