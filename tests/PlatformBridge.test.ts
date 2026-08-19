@@ -3,7 +3,7 @@ import { PlatformBridge } from '../src/integrations/PlatformBridge';
 import type { Element } from '../src/types';
 
 function fakeElement(): Element {
-  return { type: 'stroke', points: [[0, 0]], color: '#000', width: 2, createdAt: Date.now() };
+  return { id: 'e1', tool: 'pen', points: [{ x: 0, y: 0 }], color: '#000', width: 2, opacity: 1, createdAt: Date.now() };
 }
 
 describe('PlatformBridge', () => {

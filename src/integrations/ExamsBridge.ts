@@ -135,7 +135,7 @@ export class ExamsBridge {
       maxScore,
       percentage: maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0,
       stepResults,
-      passed: totalScore / maxScore >= 0.5,
+      passed: maxScore > 0 && totalScore / maxScore >= 0.5,
     };
   }
 

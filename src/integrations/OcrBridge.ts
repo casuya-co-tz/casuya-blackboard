@@ -17,6 +17,9 @@ export class OcrBridge {
 
   constructor(config: OcrConfig) {
     this.config = config;
+    if (config.provider === 'mock') {
+      console.warn('[OcrBridge] Mock OCR provider is active — not suitable for production use');
+    }
   }
 
   async recognize(imageData: string | HTMLCanvasElement | Blob): Promise<OcrResult> {

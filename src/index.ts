@@ -15,6 +15,10 @@ export type {
   BlackboardEventCallback,
   BlackboardAPI,
   ToolbarElements,
+  BoundingBox,
+  Viewport,
+  SelectionBox,
 } from './types';
 
 export * from './integrations';
+

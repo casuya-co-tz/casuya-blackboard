@@ -112,9 +112,8 @@
       [3, 'x = 5'],
     ]);
 
-    const engine = new Blackboard(container, { width: 800, height: 450 });
+    const engine = new Blackboard({ container, width: 800, height: 450 });
     createToolbar(engine);
-    engine.start();
 
     engine.on('change', () => {
       document.getElementById('undo-btn').disabled = engine.getElements().length === 0;

@@ -80,9 +80,8 @@
     import { Blackboard, createToolbar } from '../dist/index.js';
 
     const container = document.getElementById('blackboard-container');
-    const engine = new Blackboard(container, { width: 800, height: 500 });
+    const engine = new Blackboard({ container, width: 800, height: 500 });
     createToolbar(engine);
-    engine.start();
 
     const refresh = () => {
       const len = engine.getElements().length;

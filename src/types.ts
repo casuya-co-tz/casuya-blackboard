@@ -173,3 +173,22 @@ export interface BlackboardAPI {
   ungroupSelected(): void;
   exportSVG(): string;
 }
+
+export interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface Viewport {
+  scrollX: number;
+  scrollY: number;
+  zoom: number;
+}
+
+export interface SelectionBox {
+  elementId: string;
+  bounds: BoundingBox;
+}
+

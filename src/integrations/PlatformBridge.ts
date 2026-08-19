@@ -1,6 +1,6 @@
 import { Blackboard } from '../Blackboard';
 import type { Element, Snapshot, BlackboardOptions } from '../types';
-import { ExamsBridge, type ExamsConfig, type StepSubmission } from './ExamsBridge';
+import { ExamsBridge, type ExamsConfig, type StepSubmission, type StepResult, type ExamResult } from './ExamsBridge';
 import { MathBridge, type MathConfig } from './MathBridge';
 import { OcrBridge, type OcrConfig, type OcrResult } from './OcrBridge';
 
@@ -121,7 +121,7 @@ export class PlatformBridge {
     return false;
   }
 
-  async nextStep(): Promise<{ step: number; result?: any }> {
+  async nextStep(): Promise<{ step: number; result?: StepResult }> {
     if (!this.blackboard || !this.exams) {
       this.currentStep++;
       this.blackboard?.clear();
@@ -143,7 +143,7 @@ export class PlatformBridge {
     return { step: this.currentStep, result };
   }
 
-  async submitExam(): Promise<any> {
+  async submitExam(): Promise<ExamResult | null> {
     if (!this.exams) return null;
     return this.exams.submitExam();
   }

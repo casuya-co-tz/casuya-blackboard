@@ -24,6 +24,9 @@
     "perfect-freehand": "^1.2.3",
     "tesseract.js": "^5.1.0"
   },
+  "optionalDependencies": {
+    "mathjs": "^13.2.3"
+  },
   "devDependencies": {
     "@types/node": "^26.1.1",
     "happy-dom": "^20.10.6",
