@@ -101,17 +101,29 @@ const TOOLBAR_STYLES = `
   padding: 0 4px; transition: color 0.15s ease;
 }
 @media (max-width: 640px) {
-  .casuya-toolbar-btn { min-width: 44px; height: 44px; padding: 3px 4px; }
-  .casuya-toolbar-label { font-size: 8px; max-width: 40px; }
-  .casuya-action-btn { width: 36px; height: 36px; font-size: 14px; }
-  .casuya-swatch { width: 24px; height: 24px; }
-  .casuya-color-picker { width: 24px; height: 24px; }
-  .casuya-toolbar-row { flex-wrap: wrap; }
+  .casuya-toolbar-row {
+    flex-wrap: nowrap !important;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 6px !important;
+    gap: 3px !important;
+    scrollbar-width: none;
+  }
+  .casuya-toolbar-row::-webkit-scrollbar { display: none; }
   .casuya-toolbar-row > .casuya-toolbar-sep { display: none; }
-  .casuya-color-group { order: 10; width: 100%; justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; max-width: 200px; }
-  .casuya-width-group { order: 11; }
-  .casuya-action-group { order: 12; flex-wrap: wrap; }
-  .casuya-zoom-group { order: 13; margin-left: auto; }
+  .casuya-toolbar-btn { min-width: 34px; min-height: 34px; height: 34px; padding: 2px !important; }
+  .casuya-toolbar-label { display: none !important; }
+  .casuya-action-btn { width: 30px; height: 30px; font-size: 13px; }
+  .casuya-swatch { width: 20px; height: 20px; }
+  .casuya-color-picker { width: 20px; height: 20px; }
+  .casuya-color-group { flex-wrap: nowrap !important; width: auto !important; max-width: none !important; order: unset !important; gap: 3px !important; }
+  .casuya-width-group { order: unset !important; gap: 4px !important; }
+  .casuya-width-group input[type="range"] { width: 48px !important; }
+  .casuya-action-group { flex-wrap: nowrap !important; order: unset !important; gap: 2px !important; }
+  .casuya-zoom-group { order: unset !important; margin-left: 0 !important; gap: 0 !important; }
+  .casuya-zoom-btn { width: 26px; height: 26px; font-size: 14px; }
+  .casuya-zoom-label { font-size: 10px; min-width: 32px; }
+  .casuya-tooltip { display: none !important; }
 }
 `;
 
