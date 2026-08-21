@@ -129,7 +129,10 @@ export interface ToolbarElements {
   svgBtn: HTMLButtonElement;
   pngBtn: HTMLButtonElement;
   dashBtn: HTMLButtonElement;
+  pixelEraseBtn: HTMLButtonElement;
   opacitySlider: HTMLInputElement;
+  fontFamilySelect: HTMLSelectElement;
+  cornerRadiusSlider: HTMLInputElement;
   widthLabel: HTMLSpanElement;
   widthDot: HTMLDivElement;
   colorInput: HTMLInputElement;
@@ -184,7 +187,26 @@ export interface BlackboardAPI {
   setDashEnabled(enabled: boolean): void;
   getOpacity(): number;
   setOpacity(opacity: number): void;
+  getFontFamily(): string;
+  setFontFamily(family: string): void;
+  getCornerRadius(): number;
+  setCornerRadius(r: number): void;
+  getPixelEraser(): boolean;
+  setPixelEraser(enabled: boolean): void;
+  getClipboard(): string;
+  setClipboard(data: string): void;
 }
+
+export const FONT_FAMILIES = [
+  'system-ui, -apple-system, sans-serif',
+  'Georgia, serif',
+  '"Courier New", monospace',
+  '"Trebuchet MS", sans-serif',
+  'Impact, sans-serif',
+  '"Comic Sans MS", cursive',
+  'Verdana, sans-serif',
+  'Arial, sans-serif',
+];
 
 export interface BoundingBox {
   x: number;

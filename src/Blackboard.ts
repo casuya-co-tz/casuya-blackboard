@@ -67,6 +67,13 @@ export class Blackboard implements BlackboardAPI {
   private strokeOpacity = 1;
   private fillEnabled = false;
   private dashEnabled = false;
+  private pixelEraser = false;
+  private fontFamily = 'system-ui, -apple-system, sans-serif';
+  private cornerRadius = 0;
+  private clipboardData = '';
+  private static instanceCount = 0;
+  private imagePool: string[] = [];
+  private imageSrcToIdx = new Map<string, number>();
 
   private elements: Element[] = [];
   private undoStack: Element[][] = [];
@@ -130,7 +137,9 @@ export class Blackboard implements BlackboardAPI {
   private contextMenuKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(options: BlackboardOptions) {
+    Blackboard.instanceCount++;
     this.container = options.container;
+    this.autosaveKey = `casuya-blackboard-${Blackboard.instanceCount}`;
     this.width = options.width || this.container.clientWidth || 800;
     this.height = options.height || this.container.clientHeight || 600;
     this.dpr = window.devicePixelRatio || 1;
@@ -246,9 +255,36 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private pushUndo(): void {
-    this.undoStack.push(JSON.parse(JSON.stringify(this.elements)));
+    const snapshot = this.elements.map(el => {
+      if (el.tool === 'image') {
+        const img = el as ImageElement;
+        let idx = this.imageSrcToIdx.get(img.src);
+        if (idx === undefined) {
+          idx = this.imagePool.length;
+          this.imagePool.push(img.src);
+          this.imageSrcToIdx.set(img.src, idx);
+        }
+        return { ...img, src: `__img:${idx}` };
+      }
+      return JSON.parse(JSON.stringify(el));
+    });
+    this.undoStack.push(snapshot);
     if (this.undoStack.length > Blackboard.MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
+  }
+
+  private resolveSnapshot(elements: Element[]): Element[] {
+    return elements.map(el => {
+      if (el.tool === 'image') {
+        const img = { ...el } as ImageElement;
+        if (img.src.startsWith('__img:')) {
+          const idx = parseInt(img.src.slice(6));
+          img.src = this.imagePool[idx] ?? '';
+        }
+        return img;
+      }
+      return el;
+    });
   }
 
   private screenToWorld(screenX: number, screenY: number): Point {
@@ -490,6 +526,17 @@ export class Blackboard implements BlackboardAPI {
   private hitTest(worldPoint: Point): Element | null {
     for (let i = this.elements.length - 1; i >= 0; i--) {
       const el = this.elements[i];
+      const rotation = el.rotation ?? 0;
+      if ((el.tool === 'pen' || el.tool === 'highlighter' || el.tool === 'eraser') && 'points' in el) {
+        const hitDist = Math.max(el.width * 2, 10) / this.camera.zoom;
+        const center = this.getRotationCenter(el);
+        const testPoint = rotation !== 0 ? this.rotatePoint(worldPoint, center, -rotation) : worldPoint;
+        const hit = (el as Stroke).points.some(
+          p => Math.hypot(p.x - testPoint.x, p.y - testPoint.y) < hitDist
+        );
+        if (hit) return el;
+        continue;
+      }
       const bounds = this.getElementBounds(el);
       const pad = (IS_MOBILE() ? 12 : 8) / this.camera.zoom;
       if (
@@ -498,17 +545,6 @@ export class Blackboard implements BlackboardAPI {
         worldPoint.y >= bounds.y - pad &&
         worldPoint.y <= bounds.y + bounds.h + pad
       ) {
-        if ((el.tool === 'pen' || el.tool === 'highlighter') && 'points' in el) {
-          const hitDist = Math.max(el.width * 2, 10) / this.camera.zoom;
-          const rotation = el.rotation ?? 0;
-          const center = this.getRotationCenter(el);
-          const testPoint = rotation !== 0 ? this.rotatePoint(worldPoint, center, -rotation) : worldPoint;
-          const hit = (el as Stroke).points.some(
-            p => Math.hypot(p.x - testPoint.x, p.y - testPoint.y) < hitDist
-          );
-          if (hit) return el;
-          continue;
-        }
         return el;
       }
     }
@@ -689,6 +725,19 @@ export class Blackboard implements BlackboardAPI {
     }
     
     if (this.activeTool === 'eraser') {
+      if (this.pixelEraser) {
+        this.pushUndo();
+        this.isDrawing = true;
+        this.currentElement = {
+          id: uid(),
+          tool: 'eraser',
+          points: [point],
+          color: '#000000',
+          width: this.strokeWidth * 3,
+          opacity: 1,
+        };
+        return;
+      }
       this.pushUndo();
       this.isDrawing = true;
       this.lastPointerWorld = point;
@@ -722,6 +771,7 @@ export class Blackboard implements BlackboardAPI {
         filled: this.fillEnabled,
         roughness: this.roughness,
         ...(this.dashEnabled ? { dashPattern: [8, 4] } : {}),
+        ...(this.cornerRadius > 0 ? { cornerRadius: this.cornerRadius } : {}),
       };
     }
   };
@@ -827,30 +877,25 @@ export class Blackboard implements BlackboardAPI {
     const origMap = new Map(this.dragState.origElements.map(e => [e.id, e]));
     const rawDx = currentWorld.x - this.dragState.startWorld.x;
     const rawDy = currentWorld.y - this.dragState.startWorld.y;
-    for (const id of this.selectedIds) {
+
+    if (this.selectedIds.size === 1) {
+      const id = this.selectedIds.values().next().value!;
       const el = this.elements.find(e => e.id === id);
       const orig = origMap.get(id);
-      if (!el || !orig) continue;
+      if (!el || !orig) return;
       const rotation = el.rotation ?? 0;
-      let dx = rawDx;
-      let dy = rawDy;
+      let dx = rawDx, dy = rawDy;
       if (rotation !== 0) {
-        const cos = Math.cos(-rotation);
-        const sin = Math.sin(-rotation);
-        dx = rawDx * cos - rawDy * sin;
-        dy = rawDx * sin + rawDy * cos;
+        const cos = Math.cos(-rotation), sin = Math.sin(-rotation);
+        dx = rawDx * cos - rawDy * sin; dy = rawDx * sin + rawDy * cos;
       }
       if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'text') {
         this.moveSingleElement(el, orig, dx, dy);
-        continue;
+        return;
       }
       if (el.tool === 'image') {
-        const img = el as ImageElement;
-        const o = orig as ImageElement;
-        let newX = o.position.x;
-        let newY = o.position.y;
-        let newW = o.width;
-        let newH = o.height;
+        const img = el as ImageElement, o = orig as ImageElement;
+        let newX = o.position.x, newY = o.position.y, newW = o.width, newH = o.height;
         if (handle === 'nw') { newX = o.position.x + dx; newY = o.position.y + dy; newW = o.width - dx; newH = o.height - dy; }
         else if (handle === 'ne') { newY = o.position.y + dy; newW = o.width + dx; newH = o.height - dy; }
         else if (handle === 'sw') { newX = o.position.x + dx; newW = o.width - dx; newH = o.height + dy; }
@@ -859,30 +904,70 @@ export class Blackboard implements BlackboardAPI {
         else if (handle === 's') { newH = o.height + dy; }
         else if (handle === 'e') { newW = o.width + dx; }
         else if (handle === 'w') { newX = o.position.x + dx; newW = o.width - dx; }
-        if (newW > 0 && newH > 0) {
-          img.position = { x: newX, y: newY };
-          img.width = newW;
-          img.height = newH;
-        }
+        if (newW > 0 && newH > 0) { img.position = { x: newX, y: newY }; img.width = newW; img.height = newH; }
+        return;
+      }
+      const s = el as Shape, o = orig as Shape;
+      let ns = { x: o.start.x, y: o.start.y }, ne = { x: o.end.x, y: o.end.y };
+      if (handle === 'nw') { ns.x = o.start.x + dx; ns.y = o.start.y + dy; }
+      if (handle === 'ne') { ne.x = o.end.x + dx; ns.y = o.start.y + dy; }
+      if (handle === 'sw') { ns.x = o.start.x + dx; ne.y = o.end.y + dy; }
+      if (handle === 'se') { ne.x = o.end.x + dx; ne.y = o.end.y + dy; }
+      if (handle === 'n') { ns.y = o.start.y + dy; }
+      if (handle === 's') { ne.y = o.end.y + dy; }
+      if (handle === 'e') { ne.x = o.end.x + dx; }
+      if (handle === 'w') { ns.x = o.start.x + dx; }
+      if (ns.x > ne.x) { const t = ns.x; ns.x = ne.x; ne.x = t; }
+      if (ns.y > ne.y) { const t = ns.y; ns.y = ne.y; ne.y = t; }
+      if (Math.abs(ne.x - ns.x) < 5 || Math.abs(ne.y - ns.y) < 5) return;
+      s.start = ns; s.end = ne;
+      return;
+    }
+
+    let origMinX = Infinity, origMinY = Infinity, origMaxX = -Infinity, origMaxY = -Infinity;
+    for (const id of this.selectedIds) {
+      const orig = origMap.get(id);
+      if (!orig) continue;
+      const b = this.getLocalBounds(orig);
+      if (b.x < origMinX) origMinX = b.x;
+      if (b.y < origMinY) origMinY = b.y;
+      if (b.x + b.w > origMaxX) origMaxX = b.x + b.w;
+      if (b.y + b.h > origMaxY) origMaxY = b.y + b.h;
+    }
+    if (origMinX === Infinity) return;
+    const origW = origMaxX - origMinX, origH = origMaxY - origMinY;
+    const origCX = origMinX + origW / 2, origCY = origMinY + origH / 2;
+    let scaleX = 1, scaleY = 1;
+    if (handle.includes('e') || handle === 'ne' || handle === 'se') scaleX = Math.max(0.1, (origW + rawDx) / origW);
+    if (handle.includes('w') || handle === 'nw' || handle === 'sw') scaleX = Math.max(0.1, (origW - rawDx) / origW);
+    if (handle === 'n' || handle === 'nw' || handle === 'ne') scaleY = Math.max(0.1, (origH - rawDy) / origH);
+    if (handle === 's' || handle === 'sw' || handle === 'se') scaleY = Math.max(0.1, (origH + rawDy) / origH);
+
+    for (const id of this.selectedIds) {
+      const el = this.elements.find(e => e.id === id);
+      const orig = origMap.get(id);
+      if (!el || !orig) continue;
+      const ob = this.getLocalBounds(orig);
+      const newCX = origCX + (ob.x + ob.w / 2 - origCX) * scaleX;
+      const newCY = origCY + (ob.y + ob.h / 2 - origCY) * scaleY;
+      const newW = ob.w * scaleX;
+      const newH = ob.h * scaleY;
+      const dx = newCX - (ob.x + ob.w / 2);
+      const dy = newCY - (ob.y + ob.h / 2);
+      if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'text') {
+        this.moveSingleElement(el, orig, dx, dy);
         continue;
       }
-      const s = el as Shape;
-      const o = orig as Shape;
-      let newStart = { x: o.start.x, y: o.start.y };
-      let newEnd = { x: o.end.x, y: o.end.y };
-      if (handle === 'nw') { newStart.x = o.start.x + dx; newStart.y = o.start.y + dy; }
-      if (handle === 'ne') { newEnd.x = o.end.x + dx; newStart.y = o.start.y + dy; }
-      if (handle === 'sw') { newStart.x = o.start.x + dx; newEnd.y = o.end.y + dy; }
-      if (handle === 'se') { newEnd.x = o.end.x + dx; newEnd.y = o.end.y + dy; }
-      if (handle === 'n') { newStart.y = o.start.y + dy; }
-      if (handle === 's') { newEnd.y = o.end.y + dy; }
-      if (handle === 'e') { newEnd.x = o.end.x + dx; }
-      if (handle === 'w') { newStart.x = o.start.x + dx; }
-      if (newStart.x > newEnd.x) { const tmp = newStart.x; newStart.x = newEnd.x; newEnd.x = tmp; }
-      if (newStart.y > newEnd.y) { const tmp = newStart.y; newStart.y = newEnd.y; newEnd.y = tmp; }
-      if (Math.abs(newEnd.x - newStart.x) < 5 || Math.abs(newEnd.y - newStart.y) < 5) continue;
-      s.start = newStart;
-      s.end = newEnd;
+      if (el.tool === 'image') {
+        const img = el as ImageElement, o = orig as ImageElement;
+        const nw = o.width * scaleX, nh = o.height * scaleY;
+        if (nw > 0 && nh > 0) { img.position = { x: o.position.x + dx, y: o.position.y + dy }; img.width = nw; img.height = nh; }
+        continue;
+      }
+      const s = el as Shape, o = orig as Shape;
+      const ns = { x: o.start.x + dx, y: o.start.y + dy };
+      const ne = { x: o.end.x + dx, y: o.end.y + dy };
+      s.start = ns; s.end = ne;
     }
   }
 
@@ -990,6 +1075,20 @@ export class Blackboard implements BlackboardAPI {
     }
 
     if (this.activeTool === 'eraser' && this.isDrawing) {
+      if (this.pixelEraser && this.currentElement) {
+        const events = (e as any).getCoalescedEvents?.() ?? [e];
+        for (const ce of events) {
+          const p = this.getPoint(ce as PointerEvent);
+          const pts = this.currentElement.points;
+          const last = pts[pts.length - 1];
+          if (Math.hypot(p.x - last.x, p.y - last.y) >= 1) {
+            pts.push(p);
+          }
+        }
+        this.dirty = true;
+        if (!this.animFrameId) this.animFrameId = requestAnimationFrame(this.flush);
+        return;
+      }
       const point = this.getPoint(e);
       this.lastPointerWorld = point;
       const hitDist = IS_MOBILE() ? this.strokeWidth * 3.5 : this.strokeWidth * 2.5;
@@ -1112,6 +1211,25 @@ export class Blackboard implements BlackboardAPI {
     this.marqueeEnd = null;
 
     if (this.activeTool === 'eraser' && this.isDrawing) {
+      if (this.pixelEraser && this.currentElement) {
+        this.isDrawing = false;
+        if ((this.currentElement as Stroke).points.length < 2) {
+          const p = (this.currentElement as Stroke).points[0];
+          (this.currentElement as Stroke).points = [
+            { x: p.x, y: p.y, pressure: 0.5 },
+            { x: p.x + 0.5, y: p.y + 0.5, pressure: 0.5 },
+          ];
+        } else {
+          (this.currentElement as Stroke).points = this.catmullRomInterpolate((this.currentElement as Stroke).points, 0.5);
+        }
+        this.elements.push(this.currentElement);
+        this.currentElement = null;
+        this.flushLive();
+        this.renderStatic();
+        this.updateToolbar();
+        this.emit('change');
+        return;
+      }
       this.isDrawing = false;
       this.lastPointerWorld = null;
       this.renderAll();
@@ -1501,7 +1619,7 @@ export class Blackboard implements BlackboardAPI {
       background: transparent; border: 2px solid ${THEMES[this.theme].selectionColor};
       border-radius: 4px; padding: 4px 6px;
       font-size: ${taFontSize}px;
-      font-family: ${existing?.fontFamily ?? 'system-ui, -apple-system, sans-serif'};
+      font-family: ${existing?.fontFamily ?? this.fontFamily};
       color: ${existing?.color ?? this.strokeColor};
       outline: none; resize: none; overflow: hidden;
       z-index: 10; box-sizing: border-box;
@@ -1520,6 +1638,7 @@ export class Blackboard implements BlackboardAPI {
       ta.style.height = 'auto';
       ta.style.height = ta.scrollHeight + 'px';
       ta.style.width = Math.max(60, ta.scrollWidth + 10) + 'px';
+      this.renderTextPreview(ta.value, worldX, worldY, fontSize, existing?.fontFamily ?? this.fontFamily, existing?.color ?? this.strokeColor);
     });
     this.canvasWrapper.appendChild(ta);
     this.textInput = ta;
@@ -1529,7 +1648,7 @@ export class Blackboard implements BlackboardAPI {
       this.elements = this.elements.filter(e => e.id !== existing.id);
       this.renderStatic();
     }
-    setTimeout(() => { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; }, 0);
+    setTimeout(() => { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; this.renderTextPreview(ta.value, worldX, worldY, fontSize, existing?.fontFamily ?? this.fontFamily, existing?.color ?? this.strokeColor); }, 0);
   }
 
   private cancelText(): void {
@@ -1537,6 +1656,7 @@ export class Blackboard implements BlackboardAPI {
     const ta = this.textInput;
     this.textInput = null;
     ta.remove();
+    this.flushLive();
     if (this.editingTextOriginal) {
       this.elements.push(this.editingTextOriginal);
       this.renderStatic();
@@ -1554,6 +1674,7 @@ export class Blackboard implements BlackboardAPI {
     this.textInput = null;
     ta.remove();
     this.editingTextOriginal = null;
+    this.flushLive();
     if (content) {
       const screenX = parseFloat(ta.style.left);
       const screenY = parseFloat(ta.style.top);
@@ -1564,7 +1685,7 @@ export class Blackboard implements BlackboardAPI {
         position: world,
         content,
         fontSize: orig?.fontSize ?? this.fontSize,
-        fontFamily: orig?.fontFamily ?? 'system-ui, -apple-system, sans-serif',
+        fontFamily: orig?.fontFamily ?? this.fontFamily,
         color: orig?.color ?? ta.style.color,
         width: orig?.width ?? 1,
         opacity: orig?.opacity ?? this.strokeOpacity,
@@ -2064,12 +2185,30 @@ export class Blackboard implements BlackboardAPI {
           ctx.strokeRect(c.x - handleSize / 2, c.y - handleSize / 2, handleSize, handleSize);
         }
       }
-      ctx.restore();
+    ctx.restore();
+  }
+  }
+
+  private renderTextPreview(content: string, worldX: number, worldY: number, fontSize: number, fontFamily: string, color: string): void {
+    const ctx = this.liveCtx;
+    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.save();
+    ctx.scale(this.camera.zoom, this.camera.zoom);
+    ctx.translate(-this.camera.x, -this.camera.y);
+    ctx.fillStyle = color;
+    ctx.font = `${fontSize}px ${fontFamily}`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const lines = content.split('\n');
+    const lineHeight = fontSize * 1.4;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], worldX, worldY + i * lineHeight);
     }
+    ctx.restore();
   }
 
   private updateToolbar(): void {
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness, this.graph.enabled, this.dashEnabled, this.strokeOpacity);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness, this.graph.enabled, this.dashEnabled, this.strokeOpacity, this.fontFamily, this.cornerRadius, this.pixelEraser);
   }
 
   setTool(tool: Tool): void {
@@ -2146,6 +2285,15 @@ export class Blackboard implements BlackboardAPI {
       URL.revokeObjectURL(url);
     });
   }
+
+  getFontFamily(): string { return this.fontFamily; }
+  setFontFamily(family: string): void { this.fontFamily = family; this.updateToolbar(); }
+  getCornerRadius(): number { return this.cornerRadius; }
+  setCornerRadius(r: number): void { this.cornerRadius = Math.max(0, Math.min(50, r)); this.updateToolbar(); }
+  getPixelEraser(): boolean { return this.pixelEraser; }
+  setPixelEraser(enabled: boolean): void { this.pixelEraser = enabled; this.updateToolbar(); }
+  getClipboard(): string { return this.clipboardData; }
+  setClipboard(data: string): void { this.clipboardData = data; }
   
   getTheme(): 'light' | 'dark' { return this.theme; }
   
@@ -2190,8 +2338,17 @@ export class Blackboard implements BlackboardAPI {
 
   undo(): void {
     if (this.undoStack.length === 0) return;
-    this.redoStack.push(JSON.parse(JSON.stringify(this.elements)));
-    this.elements = this.undoStack.pop()!;
+    const currentSnapshot = this.elements.map(el => {
+      if (el.tool === 'image') {
+        const img = el as ImageElement;
+        let idx = this.imageSrcToIdx.get(img.src);
+        if (idx === undefined) { idx = this.imagePool.length; this.imagePool.push(img.src); this.imageSrcToIdx.set(img.src, idx); }
+        return { ...img, src: `__img:${idx}` };
+      }
+      return JSON.parse(JSON.stringify(el));
+    });
+    this.redoStack.push(currentSnapshot);
+    this.elements = this.resolveSnapshot(this.undoStack.pop()!);
     this.selectedIds.clear();
     this.renderAll();
     this.updateToolbar();
@@ -2201,8 +2358,17 @@ export class Blackboard implements BlackboardAPI {
 
   redo(): void {
     if (this.redoStack.length === 0) return;
-    this.undoStack.push(JSON.parse(JSON.stringify(this.elements)));
-    this.elements = this.redoStack.pop()!;
+    const currentSnapshot = this.elements.map(el => {
+      if (el.tool === 'image') {
+        const img = el as ImageElement;
+        let idx = this.imageSrcToIdx.get(img.src);
+        if (idx === undefined) { idx = this.imagePool.length; this.imagePool.push(img.src); this.imageSrcToIdx.set(img.src, idx); }
+        return { ...img, src: `__img:${idx}` };
+      }
+      return JSON.parse(JSON.stringify(el));
+    });
+    this.undoStack.push(currentSnapshot);
+    this.elements = this.resolveSnapshot(this.redoStack.pop()!);
     this.selectedIds.clear();
     this.renderAll();
     this.updateToolbar();
@@ -2242,7 +2408,7 @@ export class Blackboard implements BlackboardAPI {
     const set = this.listeners.get(event);
     if (!set) return;
     if (event === 'change') this.dirtySinceSave = true;
-    const payload = { elements: JSON.parse(JSON.stringify(this.elements)), tool: this.activeTool };
+    const payload = { elements: this.elements, tool: this.activeTool };
     set.forEach((cb) => cb(payload));
   }
 
@@ -2416,17 +2582,43 @@ export class Blackboard implements BlackboardAPI {
   copySelected(): void {
     if (this.selectedIds.size === 0) return;
     this.clipboard = [];
+    const data: any[] = [];
     for (const id of this.selectedIds) {
       const el = this.elements.find(e => e.id === id);
       if (!el) continue;
       const clone = JSON.parse(JSON.stringify(el));
       clone.id = uid();
       this.clipboard.push(clone);
+      data.push(clone);
     }
+    this.clipboardData = JSON.stringify(data);
+    try { navigator.clipboard.writeText(this.clipboardData); } catch {}
   }
 
   pasteClipboard(): void {
-    if (this.clipboard.length === 0) return;
+    if (this.clipboard.length === 0 && this.clipboardData) {
+      try {
+        const parsed = JSON.parse(this.clipboardData);
+        if (Array.isArray(parsed)) {
+          this.clipboard = parsed;
+        }
+      } catch {}
+    }
+    if (this.clipboard.length === 0) {
+      try {
+        navigator.clipboard.readText().then(text => {
+          if (!text) return;
+          try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].tool) {
+              this.clipboard = parsed;
+              this.pasteClipboard();
+            }
+          } catch {}
+        }).catch(() => {});
+      } catch {}
+      return;
+    }
     this.pushUndo();
     const newIds = new Set<string>();
     const groupMap = new Map<string, string>();
@@ -2580,6 +2772,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private handleImagePaste(e: ClipboardEvent): void {
+    if (this.textInput) return;
     const items = e.clipboardData?.items;
     if (!items) return;
     for (const item of items) {

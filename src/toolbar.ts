@@ -1,4 +1,5 @@
 import type { Tool, ToolbarElements, BlackboardAPI } from './types';
+import { FONT_FAMILIES } from './types';
 
 const TOOLBAR_THEMES = {
   light: { barBg: '#f8fafc', barBorder: '#e2e8f0', btnColor: '#64748b', btnHover: '#334155', btnHoverBg: '#e2e8f0', activeBg: '#dbeafe', activeColor: '#2563eb', activeBorder: '#93c5fd', sep: '#e2e8f0', tipBg: '#f1f5f9', tipBorder: '#e2e8f0', tipColor: '#64748b' },
@@ -297,6 +298,36 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   opacitySlider.addEventListener('input', () => board.setOpacity(Number(opacitySlider.value)));
   opacityGroup.appendChild(opacityLabel);
   opacityGroup.appendChild(opacitySlider);
+
+  const fontFamilySelect = document.createElement('select');
+  fontFamilySelect.style.cssText = 'font-size: 11px; border: 1px solid; border-radius: 4px; padding: 2px 4px; cursor: pointer; max-width: 120px; background: transparent; outline: none;';
+  fontFamilySelect.title = 'Font Family';
+  for (const ff of FONT_FAMILIES) {
+    const opt = document.createElement('option');
+    opt.value = ff;
+    opt.textContent = ff.split(',')[0].replace(/"/g, '');
+    fontFamilySelect.appendChild(opt);
+  }
+  fontFamilySelect.value = board.getFontFamily();
+  fontFamilySelect.addEventListener('change', () => board.setFontFamily(fontFamilySelect.value));
+
+  const cornerGroup = document.createElement('div');
+  cornerGroup.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+  const cornerLabel = document.createElement('span');
+  cornerLabel.style.cssText = 'font-size: 10px; white-space: nowrap;';
+  cornerLabel.textContent = '\u25CC';
+  cornerLabel.title = 'Corner Radius';
+  const cornerSlider = document.createElement('input');
+  cornerSlider.type = 'range'; cornerSlider.min = '0'; cornerSlider.max = '50';
+  cornerSlider.value = String(board.getCornerRadius());
+  cornerSlider.style.cssText = 'width: 40px; height: 3px; -webkit-appearance: none; appearance: none; border-radius: 2px; outline: none; cursor: pointer;';
+  cornerSlider.addEventListener('input', () => board.setCornerRadius(Number(cornerSlider.value)));
+  cornerGroup.appendChild(cornerLabel);
+  cornerGroup.appendChild(cornerSlider);
+
+  const pixelEraseBtn = createActionBtn('\u232B', 'Toggle pixel eraser', tooltipEl, () => {
+    board.setPixelEraser(!board.getPixelEraser());
+  }, board);
   const themeBtn = createActionBtn(board.getTheme() === 'light' ? '\u263E' : '\u2600', 'Toggle Theme', tooltipEl, () => {
     board.setTheme(board.getTheme() === 'light' ? 'dark' : 'light');
   }, board);
@@ -318,7 +349,10 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   actionGroup.appendChild(svgBtn);
   actionGroup.appendChild(pngBtn);
   actionGroup.appendChild(dashBtn);
+  actionGroup.appendChild(pixelEraseBtn);
   actionGroup.appendChild(opacityGroup);
+  actionGroup.appendChild(fontFamilySelect);
+  actionGroup.appendChild(cornerGroup);
   actionGroup.appendChild(themeBtn);
   actionGroup.appendChild(saveBtn);
   actionGroup.appendChild(applyStyleBtn);
@@ -356,7 +390,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   bar.appendChild(row);
   bar.appendChild(tooltipEl);
 
-  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, pngBtn, dashBtn, opacitySlider, widthLabel, widthDot, colorInput, zoomLabel, applyStyleBtn };
+  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, pngBtn, dashBtn, pixelEraseBtn, opacitySlider, fontFamilySelect, cornerRadiusSlider: cornerSlider, widthLabel, widthDot, colorInput, zoomLabel, applyStyleBtn };
 }
 
 function bindActionHover(btn: HTMLElement, title: string, tooltipEl: HTMLDivElement, board: BlackboardAPI) {
@@ -402,7 +436,10 @@ export function updateToolbarState(
   roughness?: number,
   graphEnabled?: boolean,
   dashEnabled?: boolean,
-  opacity?: number
+  opacity?: number,
+  fontFamily?: string,
+  cornerRadius?: number,
+  pixelEraser?: boolean
 ): void {
   const themeDef = TOOLBAR_THEMES[theme];
 
@@ -491,7 +528,7 @@ export function updateToolbarState(
     (b as HTMLElement).style.background = 'transparent';
   });
 
-  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.pngBtn, tb.dashBtn, tb.themeBtn, tb.applyStyleBtn] as HTMLElement[];
+  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.pngBtn, tb.dashBtn, tb.pixelEraseBtn, tb.themeBtn, tb.applyStyleBtn] as HTMLElement[];
   for (const btn of actionBtns) {
     if (!btn) continue;
     if (!btn.dataset.active) {
@@ -510,9 +547,28 @@ export function updateToolbarState(
     delete tb.dashBtn.dataset.active;
   }
 
+  if (pixelEraser) {
+    tb.pixelEraseBtn.style.background = themeDef.activeBg;
+    tb.pixelEraseBtn.style.color = themeDef.activeColor;
+    tb.pixelEraseBtn.dataset.active = 'true';
+  } else {
+    tb.pixelEraseBtn.style.background = 'transparent';
+    tb.pixelEraseBtn.style.color = themeDef.btnColor;
+    delete tb.pixelEraseBtn.dataset.active;
+  }
+
   if (opacity !== undefined) {
     tb.opacitySlider.value = String(opacity);
     tb.opacitySlider.style.background = themeDef.sep;
+  }
+  if (fontFamily !== undefined && tb.fontFamilySelect) {
+    tb.fontFamilySelect.value = fontFamily;
+    tb.fontFamilySelect.style.borderColor = themeDef.sep;
+    tb.fontFamilySelect.style.color = themeDef.btnColor;
+  }
+  if (cornerRadius !== undefined && tb.cornerRadiusSlider) {
+    tb.cornerRadiusSlider.value = String(cornerRadius);
+    tb.cornerRadiusSlider.style.background = themeDef.sep;
   }
 
   const seps = tb.bar.querySelectorAll('.casuya-toolbar-sep');
