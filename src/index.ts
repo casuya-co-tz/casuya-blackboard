@@ -1,4 +1,5 @@
 export { Blackboard } from './Blackboard';
+export { createToolbar, updateToolbarState } from './toolbar';
 export type {
   Tool,
   Point,

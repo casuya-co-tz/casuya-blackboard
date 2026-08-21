@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "katex": "^0.17.0",
-    "perfect-freehand": "^1.2.3",
     "tesseract.js": "^5.1.0"
   },
   "optionalDependencies": {

@@ -185,25 +185,17 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   const toolButtons = new Map<Tool, HTMLButtonElement>();
   let activePanel: SectionId | null = null;
   const panels: Record<SectionId, HTMLDivElement> = {} as any;
+  let outsideHandler: ((e: PointerEvent) => void) | null = null;
 
-  const applyTheme = () => {
-    const themeDef = TOOLBAR_THEMES[board.getTheme()];
-    bar.style.background = themeDef.barBg;
-    bar.style.borderColor = themeDef.barBorder;
-    tooltipEl.style.background = themeDef.tipBg;
-    tooltipEl.style.borderColor = themeDef.tipBorder;
-    tooltipEl.style.color = themeDef.tipColor;
-    const seps = bar.querySelectorAll('.casuya-separator');
-    seps.forEach(s => { (s as HTMLElement).style.background = themeDef.sep; });
-  };
+  const getTheme = () => TOOLBAR_THEMES[board.getTheme()];
 
   const closePanels = () => {
     for (const id of Object.keys(panels) as SectionId[]) {
       panels[id].classList.remove('open');
-      const btn = document.querySelector(`[data-section="${id}"]`) as HTMLElement;
+      const btn = bar.querySelector(`[data-section="${id}"]`) as HTMLElement;
       if (btn) {
         btn.style.background = 'transparent';
-        btn.style.color = TOOLBAR_THEMES[board.getTheme()].btnColor;
+        btn.style.color = getTheme().btnColor;
         btn.style.borderColor = 'transparent';
       }
     }
@@ -214,19 +206,15 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     if (activePanel === id) { closePanels(); return; }
     closePanels();
     activePanel = id;
-    const themeDef = TOOLBAR_THEMES[board.getTheme()];
+    const t = getTheme();
     panels[id].classList.add('open');
-    const btn = document.querySelector(`[data-section="${id}"]`) as HTMLElement;
+    const btn = bar.querySelector(`[data-section="${id}"]`) as HTMLElement;
     if (btn) {
-      btn.style.background = themeDef.activeBg;
-      btn.style.color = themeDef.activeColor;
-      btn.style.borderColor = themeDef.activeBorder;
+      btn.style.background = t.activeBg;
+      btn.style.color = t.activeColor;
+      btn.style.borderColor = t.activeBorder;
     }
   };
-
-  document.addEventListener('pointerdown', (e: PointerEvent) => {
-    if (!bar.contains(e.target as Node)) closePanels();
-  });
 
   function makeToolBtn(tool: Tool): HTMLButtonElement {
     const btn = document.createElement('button');
@@ -235,13 +223,10 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       board.setTool(tool);
+      setTimeout(closePanels, 80);
     });
-    btn.addEventListener('mouseenter', () => {
-      tooltipEl.textContent = TOOL_DESCRIPTIONS[tool];
-    });
-    btn.addEventListener('mouseleave', () => {
-      tooltipEl.textContent = '';
-    });
+    btn.addEventListener('mouseenter', () => { tooltipEl.textContent = TOOL_DESCRIPTIONS[tool]; });
+    btn.addEventListener('mouseleave', () => { tooltipEl.textContent = ''; });
     toolButtons.set(tool, btn);
     return btn;
   }
@@ -275,38 +260,12 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     return panel;
   }
 
-  function updatePanelTheme(panel: HTMLDivElement) {
-    const themeDef = TOOLBAR_THEMES[board.getTheme()];
-    panel.style.background = themeDef.panelBg;
-    panel.style.borderColor = themeDef.panelBorder;
-  }
-
-  function updateToolBtnTheme(btn: HTMLButtonElement) {
-    const themeDef = TOOLBAR_THEMES[board.getTheme()];
-    const tool = (btn.dataset.tool || board.getTool()) as Tool;
-    const isActive = tool === board.getTool();
-    btn.style.background = isActive ? themeDef.activeBg : 'transparent';
-    btn.style.color = isActive ? themeDef.activeColor : themeDef.btnColor;
-    btn.style.borderColor = isActive ? themeDef.activeBorder : 'transparent';
-  }
-
-  function updateActionTheme(btn: HTMLButtonElement, isActive = false) {
-    const themeDef = TOOLBAR_THEMES[board.getTheme()];
-    btn.style.background = isActive ? themeDef.activeBg : 'transparent';
-    btn.style.color = isActive ? themeDef.activeColor : themeDef.btnColor;
-  }
-
   // ── SECTION: WRITE ──
   const writePanel = makePanel('write');
   const writeRow1 = document.createElement('div');
   writeRow1.className = 'casuya-panel-row';
   for (const tool of SECTION_TOOLS.write) {
-    const btn = makeToolBtn(tool);
-    btn.dataset.tool = tool;
-    btn.addEventListener('click', () => {
-      setTimeout(closePanels, 80);
-    });
-    writeRow1.appendChild(btn);
+    writeRow1.appendChild(makeToolBtn(tool));
   }
   writePanel.appendChild(writeRow1);
   const writeSep = document.createElement('div');
@@ -314,6 +273,11 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   writePanel.appendChild(writeSep);
   const writeColors = document.createElement('div');
   writeColors.className = 'casuya-panel-row';
+  const colorInput = document.createElement('input');
+  colorInput.type = 'color';
+  colorInput.className = 'casuya-color-picker';
+  colorInput.value = board.getColor();
+  colorInput.addEventListener('input', () => board.setColor(colorInput.value));
   for (const color of COLORS) {
     const swatch = document.createElement('button');
     swatch.className = 'casuya-swatch';
@@ -321,11 +285,6 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     swatch.addEventListener('click', (e) => { e.stopPropagation(); board.setColor(color); colorInput.value = color; });
     writeColors.appendChild(swatch);
   }
-  const colorInput = document.createElement('input');
-  colorInput.type = 'color';
-  colorInput.className = 'casuya-color-picker';
-  colorInput.value = board.getColor();
-  colorInput.addEventListener('input', () => board.setColor(colorInput.value));
   writeColors.appendChild(colorInput);
   writePanel.appendChild(writeColors);
   const writeWidth = document.createElement('div');
@@ -345,7 +304,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   const widthPreview = document.createElement('div');
   widthPreview.style.cssText = 'width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;';
   const widthDot = document.createElement('div');
-  widthDot.style.cssText = `background: ${board.getColor()}; border-radius: 50%; transition: all 0.15s ease;`;
+  widthDot.style.cssText = `background: ${board.getColor()}; border-radius: 50%; width: 4px; height: 4px; transition: all 0.15s ease;`;
   widthPreview.appendChild(widthDot);
   writeWidth.appendChild(widthLabel);
   writeWidth.appendChild(widthSlider);
@@ -371,12 +330,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   const shapesRow = document.createElement('div');
   shapesRow.className = 'casuya-panel-row';
   for (const tool of SECTION_TOOLS.shapes) {
-    const btn = makeToolBtn(tool);
-    btn.dataset.tool = tool;
-    btn.addEventListener('click', () => {
-      setTimeout(closePanels, 80);
-    });
-    shapesRow.appendChild(btn);
+    shapesRow.appendChild(makeToolBtn(tool));
   }
   shapesPanel.appendChild(shapesRow);
   const shapesSep = document.createElement('div');
@@ -422,10 +376,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   const textPanel = makePanel('text');
   const textRow = document.createElement('div');
   textRow.className = 'casuya-panel-row';
-  const textBtn = makeToolBtn('text');
-  textBtn.dataset.tool = 'text';
-  textBtn.addEventListener('click', () => setTimeout(closePanels, 80));
-  textRow.appendChild(textBtn);
+  textRow.appendChild(makeToolBtn('text'));
   textPanel.appendChild(textRow);
   const textSep = document.createElement('div');
   textSep.className = 'casuya-panel-sep';
@@ -451,10 +402,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   const editRow1 = document.createElement('div');
   editRow1.className = 'casuya-panel-row';
   for (const tool of SECTION_TOOLS.edit) {
-    const btn = makeToolBtn(tool);
-    btn.dataset.tool = tool;
-    btn.addEventListener('click', () => setTimeout(closePanels, 80));
-    editRow1.appendChild(btn);
+    editRow1.appendChild(makeToolBtn(tool));
   }
   editPanel.appendChild(editRow1);
   const editSep = document.createElement('div');
@@ -462,24 +410,17 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   editPanel.appendChild(editSep);
   const editRow2 = document.createElement('div');
   editRow2.className = 'casuya-panel-row';
-  const undoBtn = makeAction('\u21A9', 'Undo (Ctrl+Z)', () => board.undo());
-  const redoBtn = makeAction('\u21AA', 'Redo (Ctrl+Shift+Z)', () => board.redo());
   const clearBtn = makeAction('\u2715', 'Clear all', () => board.clear());
-  editRow2.appendChild(undoBtn);
-  editRow2.appendChild(redoBtn);
-  editRow2.appendChild(clearBtn);
-  editPanel.appendChild(editRow2);
-  const editRow3 = document.createElement('div');
-  editRow3.className = 'casuya-panel-row';
   const groupBtn = makeAction('\u2261', 'Group (Ctrl+G)', () => board.groupSelected());
   const ungroupBtn = makeAction('\u2262', 'Ungroup (Ctrl+Shift+G)', () => board.ungroupSelected());
   const rotateBtn = makeAction('\u21BB', 'Rotate 15\u00B0 (Shift+R)', () => board.rotateSelected(Math.PI / 12));
   const applyStyleBtn = makeAction('\u270E', 'Apply style (Ctrl+Shift+F)', () => board.applyStyleToSelected());
-  editRow3.appendChild(groupBtn);
-  editRow3.appendChild(ungroupBtn);
-  editRow3.appendChild(rotateBtn);
-  editRow3.appendChild(applyStyleBtn);
-  editPanel.appendChild(editRow3);
+  editRow2.appendChild(clearBtn);
+  editRow2.appendChild(groupBtn);
+  editRow2.appendChild(ungroupBtn);
+  editRow2.appendChild(rotateBtn);
+  editRow2.appendChild(applyStyleBtn);
+  editPanel.appendChild(editRow2);
 
   // ── SECTION: EXPORT ──
   const exportPanel = makePanel('export');
@@ -528,6 +469,8 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   sepEl.style.cssText = 'width: 1px; height: 28px; margin: 0 4px; flex-shrink: 0;';
   mainRow.appendChild(sepEl);
 
+  const undoBtn = makeAction('\u21A9', 'Undo (Ctrl+Z)', () => board.undo());
+  const redoBtn = makeAction('\u21AA', 'Redo (Ctrl+Shift+Z)', () => board.redo());
   const undoRedoGroup = document.createElement('div');
   undoRedoGroup.className = 'casuya-undo-redo';
   undoRedoGroup.appendChild(undoBtn);
@@ -562,6 +505,23 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   }
   bar.appendChild(tooltipEl);
 
+  outsideHandler = (e: PointerEvent) => {
+    if (!bar.contains(e.target as Node)) closePanels();
+  };
+  document.addEventListener('pointerdown', outsideHandler);
+
+  const applyTheme = () => {
+    const t = getTheme();
+    bar.style.background = t.barBg;
+    bar.style.borderColor = t.barBorder;
+    tooltipEl.style.background = t.tipBg;
+    tooltipEl.style.borderColor = t.tipBorder;
+    tooltipEl.style.color = t.tipColor;
+    const seps = bar.querySelectorAll('.casuya-separator');
+    seps.forEach(s => { (s as HTMLElement).style.background = t.sep; });
+    const allPanels = bar.querySelectorAll('.casuya-panel') as NodeListOf<HTMLElement>;
+    allPanels.forEach(p => { p.style.background = t.panelBg; p.style.borderColor = t.panelBorder; });
+  };
   applyTheme();
 
   return {
@@ -612,7 +572,7 @@ export function updateToolbarState(
         slider.value = String(fontSize ?? 18);
       }
     } else {
-      tb.widthLabel.textContent = `Width`;
+      tb.widthLabel.textContent = 'Width';
       if (slider && slider.tagName === 'INPUT') {
         slider.min = '1'; slider.max = '20';
         slider.value = String(width);
@@ -708,7 +668,7 @@ export function updateToolbarState(
   if (fontFamily !== undefined && tb.fontFamilySelect) tb.fontFamilySelect.value = fontFamily;
   if (cornerRadius !== undefined && tb.cornerRadiusSlider) tb.cornerRadiusSlider.value = String(cornerRadius);
 
-  const seps = bar.querySelectorAll('.casuya-separator');
+  const seps = tb.bar.querySelectorAll('.casuya-separator');
   seps.forEach(s => { (s as HTMLElement).style.background = themeDef.sep; });
 
   const tooltip = tb.bar.querySelector('.casuya-tooltip') as HTMLElement;
@@ -718,8 +678,8 @@ export function updateToolbarState(
     tooltip.style.color = themeDef.tipColor;
   }
 
-  const panels = tb.bar.querySelectorAll('.casuya-panel') as NodeListOf<HTMLElement>;
-  panels.forEach(p => {
+  const allPanels = tb.bar.querySelectorAll('.casuya-panel') as NodeListOf<HTMLElement>;
+  allPanels.forEach(p => {
     p.style.background = themeDef.panelBg;
     p.style.borderColor = themeDef.panelBorder;
   });
