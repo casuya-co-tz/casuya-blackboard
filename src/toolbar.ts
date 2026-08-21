@@ -280,6 +280,23 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     a.href = url; a.download = 'blackboard.svg'; a.click();
     URL.revokeObjectURL(url);
   }, board);
+  const pngBtn = createActionBtn('\uD83D\uDDBC', 'Export PNG', tooltipEl, () => { board.exportPNG(); }, board);
+  const dashBtn = createActionBtn('\u2506', 'Toggle dashed lines', tooltipEl, () => {
+    board.setDashEnabled(!board.getDashEnabled());
+  }, board);
+  const opacityGroup = document.createElement('div');
+  opacityGroup.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+  const opacityLabel = document.createElement('span');
+  opacityLabel.style.cssText = 'font-size: 10px; white-space: nowrap;';
+  opacityLabel.textContent = '\u25D1';
+  opacityLabel.title = 'Opacity';
+  const opacitySlider = document.createElement('input');
+  opacitySlider.type = 'range'; opacitySlider.min = '0.05'; opacitySlider.max = '1';
+  opacitySlider.step = '0.05'; opacitySlider.value = String(board.getOpacity());
+  opacitySlider.style.cssText = 'width: 50px; height: 3px; -webkit-appearance: none; appearance: none; border-radius: 2px; outline: none; cursor: pointer;';
+  opacitySlider.addEventListener('input', () => board.setOpacity(Number(opacitySlider.value)));
+  opacityGroup.appendChild(opacityLabel);
+  opacityGroup.appendChild(opacitySlider);
   const themeBtn = createActionBtn(board.getTheme() === 'light' ? '\u263E' : '\u2600', 'Toggle Theme', tooltipEl, () => {
     board.setTheme(board.getTheme() === 'light' ? 'dark' : 'light');
   }, board);
@@ -299,6 +316,9 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   actionGroup.appendChild(ungroupBtn);
   actionGroup.appendChild(rotateBtn);
   actionGroup.appendChild(svgBtn);
+  actionGroup.appendChild(pngBtn);
+  actionGroup.appendChild(dashBtn);
+  actionGroup.appendChild(opacityGroup);
   actionGroup.appendChild(themeBtn);
   actionGroup.appendChild(saveBtn);
   actionGroup.appendChild(applyStyleBtn);
@@ -336,7 +356,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   bar.appendChild(row);
   bar.appendChild(tooltipEl);
 
-  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, widthLabel, widthDot, colorInput, zoomLabel, applyStyleBtn };
+  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, pngBtn, dashBtn, opacitySlider, widthLabel, widthDot, colorInput, zoomLabel, applyStyleBtn };
 }
 
 function bindActionHover(btn: HTMLElement, title: string, tooltipEl: HTMLDivElement, board: BlackboardAPI) {
@@ -380,7 +400,9 @@ export function updateToolbarState(
   zoom: number,
   fontSize?: number,
   roughness?: number,
-  graphEnabled?: boolean
+  graphEnabled?: boolean,
+  dashEnabled?: boolean,
+  opacity?: number
 ): void {
   const themeDef = TOOLBAR_THEMES[theme];
 
@@ -469,13 +491,28 @@ export function updateToolbarState(
     (b as HTMLElement).style.background = 'transparent';
   });
 
-  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.themeBtn, tb.applyStyleBtn] as HTMLElement[];
+  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.pngBtn, tb.dashBtn, tb.themeBtn, tb.applyStyleBtn] as HTMLElement[];
   for (const btn of actionBtns) {
     if (!btn) continue;
     if (!btn.dataset.active) {
       btn.style.color = themeDef.btnColor;
       btn.style.background = 'transparent';
     }
+  }
+
+  if (dashEnabled) {
+    tb.dashBtn.style.background = themeDef.activeBg;
+    tb.dashBtn.style.color = themeDef.activeColor;
+    tb.dashBtn.dataset.active = 'true';
+  } else {
+    tb.dashBtn.style.background = 'transparent';
+    tb.dashBtn.style.color = themeDef.btnColor;
+    delete tb.dashBtn.dataset.active;
+  }
+
+  if (opacity !== undefined) {
+    tb.opacitySlider.value = String(opacity);
+    tb.opacitySlider.style.background = themeDef.sep;
   }
 
   const seps = tb.bar.querySelectorAll('.casuya-toolbar-sep');

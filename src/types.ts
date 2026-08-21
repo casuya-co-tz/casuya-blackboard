@@ -98,6 +98,8 @@ export interface Snapshot {
   width: number;
   height: number;
   camera?: Camera;
+  graph?: GraphConfig;
+  theme?: 'light' | 'dark';
 }
 
 export type BlackboardEvent =
@@ -125,6 +127,9 @@ export interface ToolbarElements {
   ungroupBtn: HTMLButtonElement;
   rotateBtn: HTMLButtonElement;
   svgBtn: HTMLButtonElement;
+  pngBtn: HTMLButtonElement;
+  dashBtn: HTMLButtonElement;
+  opacitySlider: HTMLInputElement;
   widthLabel: HTMLSpanElement;
   widthDot: HTMLDivElement;
   colorInput: HTMLInputElement;
@@ -174,6 +179,11 @@ export interface BlackboardAPI {
   ungroupSelected(): void;
   exportSVG(): string;
   applyStyleToSelected(): void;
+  exportPNG(): void;
+  getDashEnabled(): boolean;
+  setDashEnabled(enabled: boolean): void;
+  getOpacity(): number;
+  setOpacity(opacity: number): void;
 }
 
 export interface BoundingBox {

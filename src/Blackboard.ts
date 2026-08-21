@@ -66,6 +66,7 @@ export class Blackboard implements BlackboardAPI {
   private strokeWidth = 2;
   private strokeOpacity = 1;
   private fillEnabled = false;
+  private dashEnabled = false;
 
   private elements: Element[] = [];
   private undoStack: Element[][] = [];
@@ -103,6 +104,7 @@ export class Blackboard implements BlackboardAPI {
   private pinchCenter: Point = { x: 0, y: 0 };
   private pinchStartCamera: Point = { x: 0, y: 0 };
   private contextMenu: HTMLDivElement | null = null;
+  private helpOverlay: HTMLDivElement | null = null;
   private longPressTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressStart: Point | null = null;
 
@@ -210,7 +212,7 @@ export class Blackboard implements BlackboardAPI {
           }
         }
       });
-      this.resizeObserver.observe(this.container);
+      this.resizeObserver.observe(this.canvasWrapper);
     }
 
     this.staticCtx = this.staticCanvas.getContext('2d')!;
@@ -248,8 +250,6 @@ export class Blackboard implements BlackboardAPI {
     if (this.undoStack.length > Blackboard.MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
   }
-
-  private commitUndo(): void {}
 
   private screenToWorld(screenX: number, screenY: number): Point {
     return { x: screenX / this.camera.zoom + this.camera.x, y: screenY / this.camera.zoom + this.camera.y };
@@ -721,6 +721,7 @@ export class Blackboard implements BlackboardAPI {
         opacity: this.strokeOpacity,
         filled: this.fillEnabled,
         roughness: this.roughness,
+        ...(this.dashEnabled ? { dashPattern: [8, 4] } : {}),
       };
     }
   };
@@ -898,17 +899,17 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private onPointerMove = (e: PointerEvent): void => {
-    if (this.activePointers.has(e.pointerId)) {
-      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
-    }
     if (this.longPressTimer && this.longPressStart) {
-      const dx = e.clientX - (this.activePointers.get(e.pointerId)?.x ?? e.clientX);
-      const dy = e.clientY - (this.activePointers.get(e.pointerId)?.y ?? e.clientY);
+      const dx = e.clientX - this.longPressStart.x;
+      const dy = e.clientY - this.longPressStart.y;
       if (Math.hypot(dx, dy) > 10) {
         clearTimeout(this.longPressTimer);
         this.longPressTimer = null;
         this.longPressStart = null;
       }
+    }
+    if (this.activePointers.has(e.pointerId)) {
+      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     }
     if (this.activePointers.size === 2) {
       const pts = Array.from(this.activePointers.values());
@@ -991,7 +992,7 @@ export class Blackboard implements BlackboardAPI {
     if (this.activeTool === 'eraser' && this.isDrawing) {
       const point = this.getPoint(e);
       this.lastPointerWorld = point;
-      const hitDist = IS_MOBILE() ? this.strokeWidth * 4 : this.strokeWidth * 2.5;
+      const hitDist = IS_MOBILE() ? this.strokeWidth * 3.5 : this.strokeWidth * 2.5;
       const toRemove: string[] = [];
       for (const el of this.elements) {
         if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
@@ -1069,6 +1070,7 @@ export class Blackboard implements BlackboardAPI {
 
   private onPointerUp = (e: PointerEvent): void => {
     this.activePointers.delete(e.pointerId);
+    if (e.pointerType === 'pen') this.usePressure = false;
     if (this.longPressTimer) { clearTimeout(this.longPressTimer); this.longPressTimer = null; }
     this.longPressStart = null;
 
@@ -1132,7 +1134,6 @@ export class Blackboard implements BlackboardAPI {
       }
     }
 
-    this.commitUndo();
     this.elements.push(this.currentElement);
     this.currentElement = null;
     this.flushLive();
@@ -1289,10 +1290,14 @@ export class Blackboard implements BlackboardAPI {
       const blob = new Blob([svg], { type: 'image/svg+xml' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = 'blackboard.svg';
-      a.click();
+      a.href = url; a.download = 'blackboard.svg'; a.click();
       URL.revokeObjectURL(url);
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+      e.preventDefault();
+      this.exportPNG();
       return;
     }
 
@@ -1461,10 +1466,9 @@ export class Blackboard implements BlackboardAPI {
     this.dismissContextMenu();
   };
 
-  private   deleteSelected(): void {
+  private deleteSelected(): void {
     if (this.selectedIds.size === 0) return;
     this.pushUndo();
-    this.commitUndo();
     for (const id of this.selectedIds) {
       const el = this.elements.find(e => e.id === id);
       if (el && el.tool === 'image') this.imageCache.delete((el as ImageElement).src);
@@ -1521,6 +1525,7 @@ export class Blackboard implements BlackboardAPI {
     this.textInput = ta;
     this.editingTextId = existing?.id ?? null;
     if (existing) {
+      this.pushUndo();
       this.elements = this.elements.filter(e => e.id !== existing.id);
       this.renderStatic();
     }
@@ -1545,6 +1550,7 @@ export class Blackboard implements BlackboardAPI {
     if (!this.textInput) return;
     const ta = this.textInput;
     const content = ta.value.trim();
+    const orig = this.editingTextOriginal;
     this.textInput = null;
     ta.remove();
     this.editingTextOriginal = null;
@@ -1552,19 +1558,18 @@ export class Blackboard implements BlackboardAPI {
       const screenX = parseFloat(ta.style.left);
       const screenY = parseFloat(ta.style.top);
       const world = this.screenToWorld(screenX, screenY);
-      const prevEl = this.editingTextId ? this.elements.find(e => e.id === this.editingTextId) : null;
       const el: TextElement = {
         id: this.editingTextId ?? uid(),
         tool: 'text',
         position: world,
         content,
-        fontSize: (prevEl && 'fontSize' in prevEl) ? (prevEl as TextElement).fontSize : this.fontSize,
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        color: ta.style.color,
-        width: 1,
-        opacity: this.strokeOpacity,
+        fontSize: orig?.fontSize ?? this.fontSize,
+        fontFamily: orig?.fontFamily ?? 'system-ui, -apple-system, sans-serif',
+        color: orig?.color ?? ta.style.color,
+        width: orig?.width ?? 1,
+        opacity: orig?.opacity ?? this.strokeOpacity,
       };
-      this.commitUndo();
+      this.pushUndo();
       this.elements.push(el);
       this.renderStatic();
       this.emit('change');
@@ -1792,7 +1797,8 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private drawShape(ctx: CanvasRenderingContext2D, shape: Shape): void {
-    if (shape.roughness !== undefined && shape.roughness > 0 || this.roughness > 0) {
+    const effectiveRoughness = shape.roughness !== undefined ? shape.roughness : this.roughness;
+    if (effectiveRoughness > 0) {
       this.drawRoughShape(ctx, shape);
       return;
     }
@@ -2063,7 +2069,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private updateToolbar(): void {
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness, this.graph.enabled);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness, this.graph.enabled, this.dashEnabled, this.strokeOpacity);
   }
 
   setTool(tool: Tool): void {
@@ -2116,6 +2122,30 @@ export class Blackboard implements BlackboardAPI {
   }
   
   getFill(): boolean { return this.fillEnabled; }
+  
+  getDashEnabled(): boolean { return this.dashEnabled; }
+  
+  setDashEnabled(enabled: boolean): void {
+    this.dashEnabled = enabled;
+    this.updateToolbar();
+  }
+  
+  getOpacity(): number { return this.strokeOpacity; }
+  
+  setOpacity(opacity: number): void {
+    this.strokeOpacity = Math.max(0.05, Math.min(1, opacity));
+    this.updateToolbar();
+  }
+  
+  exportPNG(): void {
+    this.toBlob('image/png').then(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'blackboard.png'; a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
   
   getTheme(): 'light' | 'dark' { return this.theme; }
   
@@ -2286,11 +2316,11 @@ export class Blackboard implements BlackboardAPI {
   }
 
   showShortcutHelp(): void {
-    if (this.contextMenu) { this.dismissContextMenu(); return; }
+    if (this.helpOverlay) { this.helpOverlay.remove(); this.helpOverlay = null; return; }
     const t = THEMES[this.theme];
     const overlay = document.createElement('div');
     overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;`;
-    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) { overlay.remove(); this.helpOverlay = null; } });
     const panel = document.createElement('div');
     panel.style.cssText = `background:${t.canvasBg};color:${t.gridLabelColor};border:1px solid ${t.gridColor};border-radius:12px;padding:20px 24px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6;`;
     const shortcuts = [
@@ -2299,14 +2329,14 @@ export class Blackboard implements BlackboardAPI {
       ['Arrow keys','Nudge (Shift=10px)'],['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],
       ['Ctrl+D','Duplicate'],['Ctrl+C','Copy'],['Ctrl+V','Paste'],['Ctrl+X','Cut'],['Ctrl+A','Select all'],
       ['Ctrl+G','Group'],['Ctrl+Shift+G','Ungroup'],['Ctrl+]','Bring forward'],['Ctrl+[','Send backward'],
-      ['Shift+R','Rotate 15°'],['Ctrl+Shift+S','Export SVG'],['Ctrl+Shift+F','Apply style to selection'],['?','This help'],
+      ['Shift+R','Rotate 15°'],['Ctrl+Shift+S','Export SVG'],['Ctrl+Shift+P','Export PNG'],['Ctrl+Shift+F','Apply style to selection'],['?','This help'],
     ];
     let html = `<div style="font-size:16px;font-weight:600;margin-bottom:12px;color:${t.gridAxisColor}">Keyboard Shortcuts</div>`;
     for (const [key, desc] of shortcuts) html += `<div style="display:flex;justify-content:space-between;padding:2px 0"><kbd style="background:${t.gridColor};padding:1px 6px;border-radius:4px;font-size:12px;min-width:90px;text-align:center">${key}</kbd><span>${desc}</span></div>`;
     panel.innerHTML = html;
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
-    this.contextMenu = overlay;
+    this.helpOverlay = overlay;
   }
 
   duplicateSelected(): void {
@@ -2370,7 +2400,6 @@ export class Blackboard implements BlackboardAPI {
           s.start = this.rotatePoint(s.start, center, angle);
           s.end = this.rotatePoint(s.end, center, angle);
         }
-        el.rotation = ((el.rotation ?? 0) + angle) % (Math.PI * 2);
       }
     }
     this.renderAll();
@@ -2463,7 +2492,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   exportJSON(): Snapshot {
-    return { elements: JSON.parse(JSON.stringify(this.elements)), width: this.width, height: this.height, camera: { ...this.camera } };
+    return { elements: JSON.parse(JSON.stringify(this.elements)), width: this.width, height: this.height, camera: { ...this.camera }, graph: { ...this.graph }, theme: this.theme };
   }
 
   importJSON(snapshot: Snapshot): void {
@@ -2480,12 +2509,13 @@ export class Blackboard implements BlackboardAPI {
       if (el.tool === 'image' && (!el.position || typeof el.src !== 'string')) return false;
       return true;
     });
-    this.pushUndo();
     this.elements = valid;
     this.undoStack = [];
     this.redoStack = [];
     this.imageCache.clear();
     if (snapshot.camera) this.camera = snapshot.camera;
+    if (snapshot.graph) this.graph = { ...this.graph, ...snapshot.graph };
+    if (snapshot.theme) this.setTheme(snapshot.theme);
     this.selectedIds.clear();
     this.renderAll();
     this.emit('load');
