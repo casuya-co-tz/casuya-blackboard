@@ -5,7 +5,7 @@ import { createToolbar, updateToolbarState } from './toolbar';
 const IS_MOBILE = () => window.innerWidth <= 640;
 
 function uid(): string {
-  try { return uid(); } catch { return 'xxxx-xxxx-xxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16)); }
+  try { return crypto.randomUUID(); } catch { return 'xxxx-xxxx-xxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16)); }
 }
 
 function isInInput(el: EventTarget | null): boolean {
@@ -116,15 +116,20 @@ export class Blackboard implements BlackboardAPI {
   private alignmentGuides: { x?: number; y?: number } = {};
   private imageCache = new Map<string, HTMLImageElement>();
   private resizeObserver: ResizeObserver | null = null;
-  private undoDirty = false;
+
+  private marqueeStart: Point | null = null;
+  private marqueeEnd: Point | null = null;
+  private autosaveTimer: ReturnType<typeof setInterval> | null = null;
+  private autosaveKey = 'casuya-blackboard';
+  private dirtySinceSave = false;
+  private boundBeforeUnload: ((e: BeforeUnloadEvent) => void) | null = null;
+  private toastTimeout: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: BlackboardOptions) {
     this.container = options.container;
     this.width = options.width || this.container.clientWidth || 800;
     this.height = options.height || this.container.clientHeight || 600;
     this.dpr = window.devicePixelRatio || 1;
-    this.strokeColor = options.color || '#1e293b';
-    this.strokeWidth = options.strokeWidth || 2;
     this.theme = options.theme || 'light';
 
     injectMobileStyles();
@@ -140,6 +145,11 @@ export class Blackboard implements BlackboardAPI {
       showAxes: options.graph?.showAxes ?? true,
       showLabels: options.graph?.showLabels ?? true,
     };
+    this.strokeColor = options.color || this.strokeColor;
+    this.strokeWidth = options.strokeWidth || this.strokeWidth;
+    if (options.width) this.width = options.width;
+    if (options.height) this.height = options.height;
+    this.dpr = window.devicePixelRatio || 1;
 
     const mobile = IS_MOBILE();
     this.root = document.createElement('div');
@@ -209,6 +219,25 @@ export class Blackboard implements BlackboardAPI {
     this.setTool('pen');
     this.renderAll();
     this.updateToolbar();
+
+    this.autosaveTimer = setInterval(() => {
+      if (this.dirtySinceSave) {
+        this.saveToStorage(this.autosaveKey);
+        this.dirtySinceSave = false;
+      }
+    }, 30000);
+
+    this.boundBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (this.dirtySinceSave) {
+        this.saveToStorage(this.autosaveKey);
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', this.boundBeforeUnload);
+
+    this.loadFromStorage(this.autosaveKey);
+
     setTimeout(() => this.showToast('Select a tool and start drawing'), 600);
   }
 
@@ -460,7 +489,7 @@ export class Blackboard implements BlackboardAPI {
         worldPoint.y >= bounds.y - pad &&
         worldPoint.y <= bounds.y + bounds.h + pad
       ) {
-        if (el.tool === 'pen' && 'points' in el) {
+        if ((el.tool === 'pen' || el.tool === 'highlighter') && 'points' in el) {
           const hitDist = Math.max(el.width * 2, 10) / this.camera.zoom;
           const hit = (el as Stroke).points.some(
             p => Math.hypot(p.x - worldPoint.x, p.y - worldPoint.y) < hitDist
@@ -559,7 +588,7 @@ export class Blackboard implements BlackboardAPI {
     }
     
     e.preventDefault();
-    this.liveCanvas.setPointerCapture(e.pointerId);
+    try { this.liveCanvas.setPointerCapture(e.pointerId); } catch {}
     this.activePointerId = e.pointerId;
     this.activePointerType = e.pointerType;
     
@@ -629,7 +658,9 @@ export class Blackboard implements BlackboardAPI {
         this.pushUndo();
         this.dragState = { type: 'move', startWorld: point, origElements: JSON.parse(JSON.stringify(this.elements)) };
       } else {
-        this.selectedIds.clear();
+        if (!e.shiftKey) this.selectedIds.clear();
+        this.marqueeStart = point;
+        this.marqueeEnd = point;
       }
       this.renderAll();
       return;
@@ -655,14 +686,14 @@ export class Blackboard implements BlackboardAPI {
 
     this.isDrawing = true;
 
-    if (this.activeTool === 'pen') {
+    if (this.activeTool === 'pen' || this.activeTool === 'highlighter') {
       this.currentElement = {
         id: uid(),
-        tool: 'pen',
+        tool: this.activeTool === 'highlighter' ? 'highlighter' : 'pen',
         points: [point],
         color: this.strokeColor,
-        width: this.strokeWidth,
-        opacity: this.strokeOpacity,
+        width: this.activeTool === 'highlighter' ? this.strokeWidth * 3 : this.strokeWidth,
+        opacity: this.activeTool === 'highlighter' ? 0.3 : this.strokeOpacity,
       };
     } else {
       const snapped = this.snapToGrid(point);
@@ -675,12 +706,13 @@ export class Blackboard implements BlackboardAPI {
         width: this.strokeWidth,
         opacity: this.strokeOpacity,
         filled: this.fillEnabled,
+        roughness: this.roughness,
       };
     }
   };
 
   private moveSingleElement(el: Element, orig: Element, dx: number, dy: number): void {
-    if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
       const s = el as Stroke;
       const o = orig as Stroke;
       s.points = o.points.map(p => ({ x: p.x + dx, y: p.y + dy, pressure: p.pressure }));
@@ -714,7 +746,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private getLocalBounds(el: Element): { x: number; y: number; w: number; h: number } {
-    if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
       const stroke = el as Stroke;
       if (stroke.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -793,7 +825,7 @@ export class Blackboard implements BlackboardAPI {
         dx = rawDx * cos - rawDy * sin;
         dy = rawDx * sin + rawDy * cos;
       }
-      if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'text') {
+      if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'text') {
         this.moveSingleElement(el, orig, dx, dy);
         continue;
       }
@@ -936,13 +968,19 @@ export class Blackboard implements BlackboardAPI {
       return;
     }
 
+    if (this.activeTool === 'select' && this.marqueeStart) {
+      this.marqueeEnd = this.getPoint(e);
+      this.renderAll();
+      return;
+    }
+
     if (this.activeTool === 'eraser' && this.isDrawing) {
       const point = this.getPoint(e);
       this.lastPointerWorld = point;
       const hitDist = IS_MOBILE() ? this.strokeWidth * 4 : this.strokeWidth * 2.5;
       const toRemove: string[] = [];
       for (const el of this.elements) {
-        if (el.tool === 'pen' || el.tool === 'eraser') {
+        if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
           const stroke = el as Stroke;
           const rotation = (stroke as any).rotation ?? 0;
           const center = this.getRotationCenter(stroke);
@@ -971,7 +1009,7 @@ export class Blackboard implements BlackboardAPI {
     if (!this.isDrawing || !this.currentElement) return;
     e.preventDefault();
 
-    if (this.currentElement.tool === 'pen') {
+    if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
       const events = (e as any).getCoalescedEvents?.() ?? [e];
       for (const ce of events) {
         const p = this.getPoint(ce as PointerEvent);
@@ -1044,6 +1082,27 @@ export class Blackboard implements BlackboardAPI {
       return;
     }
 
+    if (this.activeTool === 'select' && this.marqueeStart && this.marqueeEnd) {
+      const mx = Math.min(this.marqueeStart.x, this.marqueeEnd.x);
+      const my = Math.min(this.marqueeStart.y, this.marqueeEnd.y);
+      const mw = Math.abs(this.marqueeEnd.x - this.marqueeStart.x);
+      const mh = Math.abs(this.marqueeEnd.y - this.marqueeStart.y);
+      if (mw > 2 / this.camera.zoom || mh > 2 / this.camera.zoom) {
+        for (const el of this.elements) {
+          const b = this.getElementBounds(el);
+          if (b.x >= mx && b.y >= my && b.x + b.w <= mx + mw && b.y + b.h <= my + mh) {
+            this.selectedIds.add(el.id);
+          }
+        }
+      }
+      this.marqueeStart = null;
+      this.marqueeEnd = null;
+      this.renderAll();
+      return;
+    }
+    this.marqueeStart = null;
+    this.marqueeEnd = null;
+
     if (this.activeTool === 'eraser' && this.isDrawing) {
       this.isDrawing = false;
       this.lastPointerWorld = null;
@@ -1055,7 +1114,7 @@ export class Blackboard implements BlackboardAPI {
     if (!this.isDrawing || !this.currentElement) return;
     this.isDrawing = false;
 
-    if (this.currentElement.tool === 'pen') {
+    if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
       if ((this.currentElement as Stroke).points.length < 2) {
         const p = (this.currentElement as Stroke).points[0];
         (this.currentElement as Stroke).points = [
@@ -1080,7 +1139,8 @@ export class Blackboard implements BlackboardAPI {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
     const worldBefore = this.screenToWorld(sx, sy);
-    const factor = e.deltaY < 0 ? 1.1 : 0.9;
+    const delta = -e.deltaY;
+    const factor = Math.pow(1.001, delta);
     this.camera.zoom = Math.max(0.1, Math.min(10, this.camera.zoom * factor));
     const worldAfter = this.screenToWorld(sx, sy);
     this.camera.x += worldBefore.x - worldAfter.x;
@@ -1156,6 +1216,7 @@ export class Blackboard implements BlackboardAPI {
 
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (this.contextMenu) { this.dismissContextMenu(); return; }
       if (this.selectedIds.size > 0) {
         this.selectedIds.clear();
         this.renderAll();
@@ -1227,6 +1288,12 @@ export class Blackboard implements BlackboardAPI {
       return;
     }
 
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'F') {
+      e.preventDefault();
+      this.applyStyleToSelected();
+      return;
+    }
+
     if (e.shiftKey && e.key === 'R') {
       e.preventDefault();
       this.rotateSelected(Math.PI / 12);
@@ -1240,7 +1307,7 @@ export class Blackboard implements BlackboardAPI {
     }
 
     const keyToolMap: Record<string, Tool> = {
-      'v': 'select', 'h': 'hand', 'p': 'pen',
+      'v': 'select', 'h': 'hand', 'p': 'pen', 'm': 'highlighter',
       't': 'text', 'l': 'line', 'r': 'rect', 'o': 'circle',
       'a': 'arrow', 'e': 'eraser'
     };
@@ -1352,6 +1419,10 @@ export class Blackboard implements BlackboardAPI {
     if (this.selectedIds.size === 0) return;
     this.pushUndo();
     this.commitUndo();
+    for (const id of this.selectedIds) {
+      const el = this.elements.find(e => e.id === id);
+      if (el && el.tool === 'image') this.imageCache.delete((el as ImageElement).src);
+    }
     this.elements = this.elements.filter(e => !this.selectedIds.has(e.id));
     this.selectedIds.clear();
     this.renderAll();
@@ -1498,6 +1569,20 @@ export class Blackboard implements BlackboardAPI {
     if (this.currentElement) this.drawElement(ctx, this.currentElement);
     this.drawSelectionIndicators(ctx);
     this.drawAlignmentGuides(ctx);
+    if (this.marqueeStart && this.marqueeEnd) {
+      const t = THEMES[this.theme];
+      const x = Math.min(this.marqueeStart.x, this.marqueeEnd.x);
+      const y = Math.min(this.marqueeStart.y, this.marqueeEnd.y);
+      const w = Math.abs(this.marqueeEnd.x - this.marqueeStart.x);
+      const h = Math.abs(this.marqueeEnd.y - this.marqueeStart.y);
+      ctx.fillStyle = t.selectionFill;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = t.selectionColor;
+      ctx.lineWidth = 1 / this.camera.zoom;
+      ctx.setLineDash([4 / this.camera.zoom, 4 / this.camera.zoom]);
+      ctx.strokeRect(x, y, w, h);
+      ctx.setLineDash([]);
+    }
     
     if (this.activeTool === 'eraser' && this.lastPointerWorld) {
       const eraserRadius = (IS_MOBILE() ? this.strokeWidth * 3.5 : this.strokeWidth * 2.5);
@@ -1522,7 +1607,7 @@ export class Blackboard implements BlackboardAPI {
     const startY = Math.floor(vt / spacing) * spacing;
     const endY = Math.ceil(vb / spacing) * spacing;
 
-    ctx.strokeStyle = t.gridColor;
+    ctx.strokeStyle = this.graph.color || t.gridColor;
     ctx.lineWidth = 0.5 / this.camera.zoom;
     ctx.beginPath();
     for (let x = startX; x <= endX; x += spacing) {
@@ -1589,13 +1674,16 @@ export class Blackboard implements BlackboardAPI {
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
       ctx.fillStyle = 'rgba(0,0,0,1)';
+    } else if (tool === 'highlighter') {
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.fillStyle = color;
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = color;
     }
     const outlinePoints = getStroke(
       points.map(p => [p.x, p.y, p.pressure ?? 0.5]),
-      { size: width, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true }
+      { size: width, thinning: tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: tool !== 'highlighter' }
     );
     const pathData = getSvgPathFromStroke(outlinePoints);
     if (pathData) ctx.fill(new Path2D(pathData));
@@ -1674,7 +1762,7 @@ export class Blackboard implements BlackboardAPI {
         const cr = (shape as Shape).cornerRadius ?? 0;
         if (shape.filled) {
           ctx.fillStyle = color;
-          ctx.globalAlpha = 0.25;
+          ctx.globalAlpha = 0.25 * shape.opacity;
           if (cr > 0) { this.roundRect(ctx, rx, ry, rw, rh, cr); ctx.fill(); }
           else ctx.fillRect(rx, ry, rw, rh);
           ctx.globalAlpha = shape.opacity;
@@ -1695,7 +1783,7 @@ export class Blackboard implements BlackboardAPI {
         ctx.ellipse(cx, cy, rrx, rry, 0, 0, Math.PI * 2);
         if (shape.filled) {
           ctx.fillStyle = color;
-          ctx.globalAlpha = 0.25;
+          ctx.globalAlpha = 0.25 * shape.opacity;
           ctx.fill();
           ctx.globalAlpha = shape.opacity;
         }
@@ -1787,7 +1875,7 @@ export class Blackboard implements BlackboardAPI {
           if (shape.filled) {
             ctx.fillStyle = color;
             const savedAlpha = ctx.globalAlpha;
-            ctx.globalAlpha = 0.25;
+            ctx.globalAlpha = 0.25 * shape.opacity;
             ctx.fill();
             ctx.globalAlpha = savedAlpha;
           }
@@ -1811,7 +1899,7 @@ export class Blackboard implements BlackboardAPI {
           if (shape.filled) {
             ctx.fillStyle = color;
             const savedAlpha = ctx.globalAlpha;
-            ctx.globalAlpha = 0.25;
+            ctx.globalAlpha = 0.25 * shape.opacity;
             ctx.fill();
             ctx.globalAlpha = savedAlpha;
           }
@@ -1922,12 +2010,14 @@ export class Blackboard implements BlackboardAPI {
   }
 
   setTool(tool: Tool): void {
+    this.commitText();
     this.activeTool = tool;
     let cursor = 'crosshair';
     if (tool === 'select') cursor = 'default';
     else if (tool === 'hand') cursor = 'grab';
     else if (tool === 'text') cursor = 'text';
     else if (tool === 'eraser') cursor = 'cell';
+    else if (tool === 'highlighter') cursor = 'crosshair';
     this.liveCanvas.style.cursor = cursor;
     this.updateToolbar();
     this.emit('toolchange');
@@ -2038,6 +2128,7 @@ export class Blackboard implements BlackboardAPI {
       this.emit('clear');
       return;
     }
+    if (!confirm('Clear all elements?')) return;
     this.pushUndo();
     this.elements = [];
     this.selectedIds.clear();
@@ -2063,7 +2154,8 @@ export class Blackboard implements BlackboardAPI {
   private emit(event: BlackboardEvent): void {
     const set = this.listeners.get(event);
     if (!set) return;
-    const payload = { elements: this.elements, tool: this.activeTool };
+    if (event === 'change') this.dirtySinceSave = true;
+    const payload = { elements: JSON.parse(JSON.stringify(this.elements)), tool: this.activeTool };
     set.forEach((cb) => cb(payload));
   }
 
@@ -2119,7 +2211,7 @@ export class Blackboard implements BlackboardAPI {
     for (const id of this.selectedIds) {
       const el = this.elements.find(e => e.id === id);
       if (!el) continue;
-      if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
         const s = el as Stroke;
         s.points = s.points.map(p => ({ x: p.x + dx, y: p.y + dy, pressure: p.pressure }));
       } else if (el.tool === 'text') {
@@ -2145,12 +2237,12 @@ export class Blackboard implements BlackboardAPI {
     const panel = document.createElement('div');
     panel.style.cssText = `background:${t.canvasBg};color:${t.gridLabelColor};border:1px solid ${t.gridColor};border-radius:12px;padding:20px 24px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6;`;
     const shortcuts = [
-      ['P','Pen'],['T','Text'],['L','Line'],['R','Rect'],['O','Circle'],['A','Arrow'],['E','Eraser'],['V','Select'],['H','Hand'],
+      ['P','Pen'],['M','Highlighter'],['T','Text'],['L','Line'],['R','Rect'],['O','Circle'],['A','Arrow'],['E','Eraser'],['V','Select'],['H','Hand'],
       ['Space+Drag','Pan'],['Esc','Deselect / Cancel'],['Del','Delete selected'],
       ['Arrow keys','Nudge (Shift=10px)'],['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],
       ['Ctrl+D','Duplicate'],['Ctrl+C','Copy'],['Ctrl+V','Paste'],['Ctrl+X','Cut'],['Ctrl+A','Select all'],
       ['Ctrl+G','Group'],['Ctrl+Shift+G','Ungroup'],['Ctrl+]','Bring forward'],['Ctrl+[','Send backward'],
-      ['Shift+R','Rotate 15°'],['Ctrl+Shift+S','Export SVG'],['?','This help'],
+      ['Shift+R','Rotate 15°'],['Ctrl+Shift+S','Export SVG'],['Ctrl+Shift+F','Apply style to selection'],['?','This help'],
     ];
     let html = `<div style="font-size:16px;font-weight:600;margin-bottom:12px;color:${t.gridAxisColor}">Keyboard Shortcuts</div>`;
     for (const [key, desc] of shortcuts) html += `<div style="display:flex;justify-content:space-between;padding:2px 0"><kbd style="background:${t.gridColor};padding:1px 6px;border-radius:4px;font-size:12px;min-width:90px;text-align:center">${key}</kbd><span>${desc}</span></div>`;
@@ -2248,13 +2340,28 @@ export class Blackboard implements BlackboardAPI {
     this.emit('change');
   }
 
+  applyStyleToSelected(): void {
+    if (this.selectedIds.size === 0) return;
+    this.pushUndo();
+    for (const id of this.selectedIds) {
+      const el = this.elements.find(e => e.id === id);
+      if (!el) continue;
+      if (el.tool !== 'image') (el as any).color = this.strokeColor;
+      el.opacity = this.strokeOpacity;
+      if ('width' in el && el.tool !== 'text') (el as any).width = this.strokeWidth;
+      if ('filled' in el) (el as any).filled = this.fillEnabled;
+      if ('roughness' in el) (el as any).roughness = this.roughness;
+    }
+    this.renderAll();
+    this.emit('change');
+  }
+
   toDataURL(type = 'image/png', quality = 1): string {
     const c = document.createElement('canvas');
     c.width = this.width * this.dpr;
     c.height = this.height * this.dpr;
     const ctx = c.getContext('2d')!;
     ctx.drawImage(this.staticCanvas, 0, 0);
-    ctx.drawImage(this.liveCanvas, 0, 0);
     return c.toDataURL(type, quality);
   }
 
@@ -2265,7 +2372,6 @@ export class Blackboard implements BlackboardAPI {
       c.height = this.height * this.dpr;
       const ctx = c.getContext('2d')!;
       ctx.drawImage(this.staticCanvas, 0, 0);
-      ctx.drawImage(this.liveCanvas, 0, 0);
       c.toBlob(resolve, type, quality);
     });
   }
@@ -2275,7 +2381,21 @@ export class Blackboard implements BlackboardAPI {
   }
 
   importJSON(snapshot: Snapshot): void {
-    this.elements = snapshot.elements;
+    if (!snapshot || !Array.isArray(snapshot.elements)) {
+      this.showToast('Invalid snapshot data');
+      return;
+    }
+    const validTools = new Set(['pen', 'eraser', 'highlighter', 'line', 'rect', 'circle', 'arrow', 'text', 'image']);
+    const valid = snapshot.elements.filter((el: any) => {
+      if (!el || typeof el.id !== 'string' || !validTools.has(el.tool)) return false;
+      if ((el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') && !Array.isArray(el.points)) return false;
+      if ((el.tool === 'line' || el.tool === 'rect' || el.tool === 'circle' || el.tool === 'arrow') && (!el.start || !el.end)) return false;
+      if (el.tool === 'text' && (!el.position || typeof el.content !== 'string')) return false;
+      if (el.tool === 'image' && (!el.position || typeof el.src !== 'string')) return false;
+      return true;
+    });
+    this.pushUndo();
+    this.elements = valid;
     this.undoStack = [];
     this.redoStack = [];
     this.imageCache.clear();
@@ -2284,11 +2404,15 @@ export class Blackboard implements BlackboardAPI {
     this.renderAll();
     this.emit('load');
     this.emit('change');
+    if (valid.length < snapshot.elements.length) {
+      this.showToast(`Loaded ${valid.length} of ${snapshot.elements.length} elements`);
+    }
   }
 
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    this.dpr = window.devicePixelRatio || 1;
     this.setupCanvases();
     this.renderAll();
   }
@@ -2316,6 +2440,9 @@ export class Blackboard implements BlackboardAPI {
   }
 
   showToast(msg: string): void {
+    const existing = this.root.querySelector('.casuya-toast');
+    if (existing) existing.remove();
+    if (this.toastTimeout) { clearTimeout(this.toastTimeout); this.toastTimeout = null; }
     const mobile = IS_MOBILE();
     const toast = document.createElement('div');
     toast.className = 'casuya-toast';
@@ -2326,12 +2453,14 @@ export class Blackboard implements BlackboardAPI {
       font-size: ${mobile ? 11 : 13}px; z-index: 100; pointer-events: none; white-space: nowrap;
       animation: fadeInOut 2s ease forwards;
     `;
-    const style = document.createElement('style');
-    style.textContent = `@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 15% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`;
-    toast.appendChild(style);
-    this.root.appendChild(style);
+    if (!document.getElementById('casuya-toast-keyframes')) {
+      const style = document.createElement('style');
+      style.id = 'casuya-toast-keyframes';
+      style.textContent = `@keyframes fadeInOut { 0% { opacity: 0; transform: translateX(-50%) translateY(8px); } 15% { opacity: 1; transform: translateX(-50%) translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }`;
+      document.head.appendChild(style);
+    }
     this.root.appendChild(toast);
-    setTimeout(() => { toast.remove(); style.remove(); }, 2000);
+    this.toastTimeout = setTimeout(() => { toast.remove(); }, 2000);
   }
 
   private handleImagePaste(e: ClipboardEvent): void {
@@ -2477,23 +2606,25 @@ export class Blackboard implements BlackboardAPI {
   private elementToSVG(el: Element): string {
     const rotation = el.rotation ?? 0;
     const op = el.opacity !== undefined ? ` opacity="${el.opacity}"` : '';
-    if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
       const stroke = el as Stroke;
       if (stroke.points.length < 2) return '';
       const outlinePoints = getStroke(
         stroke.points.map(p => [p.x, p.y, p.pressure ?? 0.5]),
-        { size: stroke.width, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true }
+        { size: stroke.width, thinning: stroke.tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: stroke.tool !== 'highlighter' }
       );
       const pathData = getSvgPathFromStroke(outlinePoints);
       if (!pathData) return '';
       const fill = stroke.tool === 'eraser' ? 'none' : stroke.color;
+      const opAttr = stroke.tool === 'highlighter' ? ` opacity="0.3"` : op;
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<path d="${pathData}" fill="${fill}"${rot}${op}/>`;
+      return `<path d="${pathData}" fill="${fill}"${rot}${opAttr}/>`;
     }
     if (el.tool === 'line') {
       const s = el as Shape;
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<line x1="${s.start.x}" y1="${s.start.y}" x2="${s.end.x}" y2="${s.end.y}" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round"${rot}${op}/>`;
+      const dash = (s as Shape).dashPattern ? ` stroke-dasharray="${(s as Shape).dashPattern!.join(',')}"` : '';
+      return `<line x1="${s.start.x}" y1="${s.start.y}" x2="${s.end.x}" y2="${s.end.y}" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round"${dash}${rot}${op}/>`;
     }
     if (el.tool === 'rect') {
       const s = el as Shape;
@@ -2503,8 +2634,9 @@ export class Blackboard implements BlackboardAPI {
       const rh = Math.abs(s.end.y - s.start.y);
       const cr = s.cornerRadius ? ` rx="${s.cornerRadius}" ry="${s.cornerRadius}"` : '';
       const fill = s.filled ? ` fill="${s.color}" fill-opacity="0.25"` : ' fill="none"';
+      const dash = s.dashPattern ? ` stroke-dasharray="${s.dashPattern.join(',')}"` : '';
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}"${cr} stroke="${s.color}" stroke-width="${s.width}"${fill}${rot}${op}/>`;
+      return `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}"${cr} stroke="${s.color}" stroke-width="${s.width}"${fill}${dash}${rot}${op}/>`;
     }
     if (el.tool === 'circle') {
       const s = el as Shape;
@@ -2513,8 +2645,9 @@ export class Blackboard implements BlackboardAPI {
       const rrx = Math.abs(s.end.x - s.start.x) / 2;
       const rry = Math.abs(s.end.y - s.start.y) / 2;
       const fill = s.filled ? ` fill="${s.color}" fill-opacity="0.25"` : ' fill="none"';
+      const dash = s.dashPattern ? ` stroke-dasharray="${s.dashPattern.join(',')}"` : '';
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<ellipse cx="${cx}" cy="${cy}" rx="${rrx}" ry="${rry}" stroke="${s.color}" stroke-width="${s.width}"${fill}${rot}${op}/>`;
+      return `<ellipse cx="${cx}" cy="${cy}" rx="${rrx}" ry="${rry}" stroke="${s.color}" stroke-width="${s.width}"${fill}${dash}${rot}${op}/>`;
     }
     if (el.tool === 'arrow') {
       const s = el as Shape;
@@ -2540,7 +2673,7 @@ export class Blackboard implements BlackboardAPI {
         `<tspan x="${t.position.x}" dy="${i === 0 ? 0 : lineHeight}">${line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</tspan>`
       ).join('');
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<text x="${t.position.x}" y="${t.position.y}" font-size="${t.fontSize}" font-family="${t.fontFamily}" fill="${t.color}"${rot}${op}>${tspans}</text>`;
+      return `<text x="${t.position.x}" y="${t.position.y}" font-size="${t.fontSize}" font-family="${t.fontFamily}" fill="${t.color}" dominant-baseline="hanging"${rot}${op}>${tspans}</text>`;
     }
     if (el.tool === 'image') {
       const img = el as ImageElement;
@@ -2577,6 +2710,9 @@ export class Blackboard implements BlackboardAPI {
     this.detachEvents();
     if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
     if (this.resizeObserver) { this.resizeObserver.disconnect(); this.resizeObserver = null; }
+    if (this.autosaveTimer) { clearInterval(this.autosaveTimer); this.autosaveTimer = null; }
+    if (this.boundBeforeUnload) { window.removeEventListener('beforeunload', this.boundBeforeUnload); this.boundBeforeUnload = null; }
+    if (this.toastTimeout) { clearTimeout(this.toastTimeout); this.toastTimeout = null; }
     this.dismissContextMenu();
     this.imageCache.clear();
     this.root.remove();

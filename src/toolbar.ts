@@ -9,6 +9,7 @@ const TOOL_ICONS: Record<Tool, string> = {
   select: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="M13 13l6 6"/></svg>`,
   hand: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V4a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>`,
   pen: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`,
+  highlighter: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/></svg>`,
   text: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>`,
   line: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="19" x2="19" y2="5"/></svg>`,
   rect: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>`,
@@ -22,12 +23,13 @@ const COLORS = [
   '#ca8a04', '#9333ea', '#ea580c', '#0891b2',
 ];
 
-const TOOL_ORDER: Tool[] = ['select', 'hand', 'pen', 'text', 'line', 'rect', 'circle', 'arrow', 'eraser'];
+const TOOL_ORDER: Tool[] = ['select', 'hand', 'pen', 'highlighter', 'text', 'line', 'rect', 'circle', 'arrow', 'eraser'];
 
 const TOOL_LABELS: Record<Tool, string> = {
   select: 'Select',
   hand: 'Hand',
   pen: 'Pen',
+  highlighter: 'Highlight',
   text: 'Text',
   line: 'Line',
   rect: 'Rect',
@@ -40,6 +42,7 @@ const TOOL_DESCRIPTIONS: Record<Tool, string> = {
   select: 'Select, move, and resize elements (V)',
   hand: 'Pan the canvas (H / Space+drag)',
   pen: 'Freehand drawing with pressure sensitivity (P)',
+  highlighter: 'Semi-transparent highlighting marker (M)',
   text: 'Add text labels and notes (T)',
   line: 'Draw a straight line (L)',
   rect: 'Draw a rectangle — hold Shift for square (R)',
@@ -281,6 +284,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     board.setTheme(board.getTheme() === 'light' ? 'dark' : 'light');
   }, board);
   const saveBtn = createActionBtn('\u2193', 'Save to browser', tooltipEl, () => { board.saveToStorage(); board.showToast('\u2713 Saved'); }, board);
+  const applyStyleBtn = createActionBtn('\u270E', 'Apply style to selection (Ctrl+Shift+F)', tooltipEl, () => { board.applyStyleToSelected(); }, board);
 
   const actionGroup = document.createElement('div');
   actionGroup.className = 'casuya-action-group';
@@ -297,6 +301,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   actionGroup.appendChild(svgBtn);
   actionGroup.appendChild(themeBtn);
   actionGroup.appendChild(saveBtn);
+  actionGroup.appendChild(applyStyleBtn);
   row.appendChild(actionGroup);
   row.appendChild(sep());
 
@@ -331,7 +336,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   bar.appendChild(row);
   bar.appendChild(tooltipEl);
 
-  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, widthLabel, widthDot, colorInput, zoomLabel };
+  return { bar, toolButtons, undoBtn, redoBtn, graphBtn, fillBtn, themeBtn, roughnessBtn, groupBtn, ungroupBtn, rotateBtn, svgBtn, widthLabel, widthDot, colorInput, zoomLabel, applyStyleBtn };
 }
 
 function bindActionHover(btn: HTMLElement, title: string, tooltipEl: HTMLDivElement, board: BlackboardAPI) {
@@ -464,7 +469,7 @@ export function updateToolbarState(
     (b as HTMLElement).style.background = 'transparent';
   });
 
-  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.themeBtn] as HTMLElement[];
+  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.themeBtn, tb.applyStyleBtn] as HTMLElement[];
   for (const btn of actionBtns) {
     if (!btn) continue;
     if (!btn.dataset.active) {

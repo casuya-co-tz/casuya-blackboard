@@ -1,4 +1,4 @@
-export type Tool = 'select' | 'hand' | 'pen' | 'text' | 'line' | 'rect' | 'circle' | 'arrow' | 'eraser';
+export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'text' | 'line' | 'rect' | 'circle' | 'arrow' | 'eraser';
 
 export interface Point {
   x: number;
@@ -14,7 +14,7 @@ export interface Camera {
 
 export interface Stroke {
   id: string;
-  tool: 'pen' | 'eraser';
+  tool: 'pen' | 'eraser' | 'highlighter';
   points: Point[];
   color: string;
   width: number;
@@ -129,6 +129,7 @@ export interface ToolbarElements {
   widthDot: HTMLDivElement;
   colorInput: HTMLInputElement;
   zoomLabel: HTMLSpanElement;
+  applyStyleBtn: HTMLButtonElement;
 }
 
 /**
@@ -172,6 +173,7 @@ export interface BlackboardAPI {
   groupSelected(): void;
   ungroupSelected(): void;
   exportSVG(): string;
+  applyStyleToSelected(): void;
 }
 
 export interface BoundingBox {
