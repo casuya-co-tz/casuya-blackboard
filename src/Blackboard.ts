@@ -1,4 +1,3 @@
-import { getStroke } from 'perfect-freehand';
 import type { Tool, Point, Stroke, Shape, TextElement, ImageElement, GraphConfig, BlackboardOptions, Element, Snapshot, BlackboardEvent, BlackboardEventCallback, Camera, ToolbarElements, BlackboardAPI } from './types';
 import { createToolbar, updateToolbarState } from './toolbar';
 
@@ -32,22 +31,6 @@ const THEMES = {
   light: { canvasBg: '#ffffff', gridColor: '#e2e8f0', gridAxisColor: '#94a3b8', gridLabelColor: '#64748b', hintColor: '#cbd5e1', selectionColor: '#3b82f6', selectionFill: 'rgba(59, 130, 246, 0.1)' },
   dark: { canvasBg: '#1e1e2e', gridColor: '#313244', gridAxisColor: '#585b70', gridLabelColor: '#6c7086', hintColor: '#45475a', selectionColor: '#89b4fa', selectionFill: 'rgba(137, 180, 250, 0.1)' },
 };
-
-function getSvgPathFromStroke(points: number[][]): string {
-  if (points.length < 2) return '';
-  const max = points.length - 1;
-  let d = `M${points[0][0].toFixed(2)},${points[0][1].toFixed(2)}`;
-  for (let i = 1; i < max; i++) {
-    const p0 = points[i];
-    const p1 = points[i + 1];
-    d += ` Q${p0[0].toFixed(2)},${p0[1].toFixed(2)} ${((p0[0] + p1[0]) / 2).toFixed(2)},${((p0[1] + p1[1]) / 2).toFixed(2)}`;
-  }
-  if (points.length > 1) {
-    const last = points[points.length - 1];
-    d += ` L${last[0].toFixed(2)},${last[1].toFixed(2)}`;
-  }
-  return d;
-}
 
 export class Blackboard implements BlackboardAPI {
   private container: HTMLElement;
@@ -321,34 +304,18 @@ export class Blackboard implements BlackboardAPI {
     return bestPoint;
   }
 
-  private catmullRomInterpolate(points: Point[], tension = 0.5): Point[] {
+  private downsampleStroke(points: Point[], minDist: number): Point[] {
     if (points.length < 2) return [...points];
     const result: Point[] = [points[0]];
-    const alpha = 0.5 + tension * 0.5;
-    for (let i = 0; i < points.length - 1; i++) {
-      const p0 = points[Math.max(0, i - 1)];
-      const p1 = points[i];
-      const p2 = points[Math.min(points.length - 1, i + 1)];
-      const p3 = points[Math.min(points.length - 1, i + 2)];
-      const steps = 3;
-      for (let t = 1; t <= steps; t++) {
-        const tt = t / steps;
-        const tt2 = tt * tt;
-        const tt3 = tt2 * tt;
-        const x = alpha * (
-          (2 * p1.x) +
-          (-p0.x + p2.x) * tt +
-          (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * tt2 +
-          (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * tt3
-        );
-        const y = alpha * (
-          (2 * p1.y) +
-          (-p0.y + p2.y) * tt +
-          (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * tt2 +
-          (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * tt3
-        );
-        result.push({ x, y });
+    for (let i = 1; i < points.length; i++) {
+      const prev = result[result.length - 1];
+      const p = points[i];
+      if (Math.hypot(p.x - prev.x, p.y - prev.y) >= minDist) {
+        result.push(p);
       }
+    }
+    if (result.length < 2 && points.length >= 2) {
+      result.push(points[points.length - 1]);
     }
     return result;
   }
@@ -1268,37 +1235,37 @@ export class Blackboard implements BlackboardAPI {
             { x: p.x, y: p.y, pressure: 0.5 },
             { x: p.x + 0.5, y: p.y + 0.5, pressure: 0.5 },
           ];
-        } else {
-          (this.currentElement as Stroke).points = this.catmullRomInterpolate((this.currentElement as Stroke).points, 0.5);
-        }
-        this.elements.push(this.currentElement);
-        this.currentElement = null;
-        this.flushLive();
-        this.renderStatic();
-        this.updateToolbar();
-        this.emit('change');
-        return;
+      } else {
+        (this.currentElement as Stroke).points = this.downsampleStroke((this.currentElement as Stroke).points, 2);
       }
-      this.isDrawing = false;
-      this.lastPointerWorld = null;
-      this.renderAll();
+      this.elements.push(this.currentElement);
+      this.currentElement = null;
+      this.flushLive();
+      this.renderStatic();
       this.updateToolbar();
+      this.emit('change');
       return;
     }
-
-    if (!this.isDrawing || !this.currentElement) return;
     this.isDrawing = false;
+    this.lastPointerWorld = null;
+    this.renderAll();
+    this.updateToolbar();
+    return;
+  }
 
-    if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
-      if ((this.currentElement as Stroke).points.length < 2) {
-        const p = (this.currentElement as Stroke).points[0];
-        (this.currentElement as Stroke).points = [
-          { x: p.x, y: p.y, pressure: 0.5 },
-          { x: p.x + 0.5, y: p.y + 0.5, pressure: 0.5 },
-        ];
-      } else {
-        (this.currentElement as Stroke).points = this.catmullRomInterpolate((this.currentElement as Stroke).points, 0.5);
-      }
+  if (!this.isDrawing || !this.currentElement) return;
+  this.isDrawing = false;
+
+  if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
+    if ((this.currentElement as Stroke).points.length < 2) {
+      const p = (this.currentElement as Stroke).points[0];
+      (this.currentElement as Stroke).points = [
+        { x: p.x, y: p.y, pressure: 0.5 },
+        { x: p.x + 0.5, y: p.y + 0.5, pressure: 0.5 },
+      ];
+    } else {
+      (this.currentElement as Stroke).points = this.downsampleStroke((this.currentElement as Stroke).points, 2);
+    }
     }
 
     this.elements.push(this.currentElement);
@@ -1952,22 +1919,31 @@ export class Blackboard implements BlackboardAPI {
 
   private drawFreehand(ctx: CanvasRenderingContext2D, stroke: Stroke): void {
     const { points, color, width, tool } = stroke;
+    if (points.length < 2) return;
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.strokeStyle = 'rgba(0,0,0,1)';
     } else if (tool === 'highlighter') {
       ctx.globalCompositeOperation = 'multiply';
-      ctx.fillStyle = color;
+      ctx.strokeStyle = color;
     } else {
       ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = color;
+      ctx.strokeStyle = color;
     }
-    const outlinePoints = getStroke(
-      points.map(p => [p.x, p.y, p.pressure ?? 0.5]),
-      { size: width, thinning: tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: tool === 'highlighter' ? false : !this.usePressure }
-    );
-    const pathData = getSvgPathFromStroke(outlinePoints);
-    if (pathData) ctx.fill(new Path2D(pathData));
+    ctx.lineWidth = width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+      const mx = (prev.x + curr.x) / 2;
+      const my = (prev.y + curr.y) / 2;
+      ctx.quadraticCurveTo(prev.x, prev.y, mx, my);
+    }
+    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+    ctx.stroke();
     ctx.globalCompositeOperation = 'source-over';
   }
 
@@ -3148,16 +3124,21 @@ export class Blackboard implements BlackboardAPI {
     if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
       const stroke = el as Stroke;
       if (stroke.points.length < 2) return '';
-      const outlinePoints = getStroke(
-        stroke.points.map(p => [p.x, p.y, p.pressure ?? 0.5]),
-        { size: stroke.width, thinning: stroke.tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: stroke.tool !== 'highlighter' }
-      );
-      const pathData = getSvgPathFromStroke(outlinePoints);
-      if (!pathData) return '';
-      const fill = stroke.tool === 'eraser' ? 'none' : stroke.color;
+      const pts = stroke.points;
+      let d = `M${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`;
+      for (let i = 1; i < pts.length; i++) {
+        const prev = pts[i - 1];
+        const curr = pts[i];
+        const mx = ((prev.x + curr.x) / 2).toFixed(2);
+        const my = ((prev.y + curr.y) / 2).toFixed(2);
+        d += ` Q${prev.x.toFixed(2)},${prev.y.toFixed(2)} ${mx},${my}`;
+      }
+      d += ` L${pts[pts.length - 1].x.toFixed(2)},${pts[pts.length - 1].y.toFixed(2)}`;
+      const strokeColor = stroke.tool === 'eraser' ? 'none' : stroke.color;
+      const fillColor = stroke.tool === 'eraser' ? 'none' : stroke.color;
       const opAttr = stroke.tool === 'highlighter' ? ` opacity="0.3"` : op;
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
-      return `<path d="${pathData}" fill="${fill}"${rot}${opAttr}/>`;
+      return `<path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="${stroke.width}" stroke-linecap="round" stroke-linejoin="round"${rot}${opAttr}/>`;
     }
     if (el.tool === 'line') {
       const s = el as Shape;
