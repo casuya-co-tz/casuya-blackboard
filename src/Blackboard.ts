@@ -124,6 +124,8 @@ export class Blackboard implements BlackboardAPI {
   private dirtySinceSave = false;
   private boundBeforeUnload: ((e: BeforeUnloadEvent) => void) | null = null;
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
+  private usePressure = false;
+  private contextMenuKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(options: BlackboardOptions) {
     this.container = options.container;
@@ -439,6 +441,9 @@ export class Blackboard implements BlackboardAPI {
     });
   }
 
+  private onScrollDismiss = (): void => { this.dismissContextMenu(); };
+  private onResizeDismiss = (): void => { this.dismissContextMenu(); };
+
   private attachEvents(): void {
     this.liveCanvas.addEventListener('pointerdown', this.onPointerDown);
     this.liveCanvas.addEventListener('pointermove', this.onPointerMove);
@@ -453,6 +458,8 @@ export class Blackboard implements BlackboardAPI {
     window.addEventListener('click', this.onWindowClick);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('scroll', this.onScrollDismiss, { capture: true, passive: true });
+    window.addEventListener('resize', this.onResizeDismiss);
   }
 
   private detachEvents(): void {
@@ -469,6 +476,8 @@ export class Blackboard implements BlackboardAPI {
     window.removeEventListener('click', this.onWindowClick);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('scroll', this.onScrollDismiss);
+    window.removeEventListener('resize', this.onResizeDismiss);
   }
 
   private getPoint = (e: PointerEvent): Point => {
@@ -491,8 +500,11 @@ export class Blackboard implements BlackboardAPI {
       ) {
         if ((el.tool === 'pen' || el.tool === 'highlighter') && 'points' in el) {
           const hitDist = Math.max(el.width * 2, 10) / this.camera.zoom;
+          const rotation = el.rotation ?? 0;
+          const center = this.getRotationCenter(el);
+          const testPoint = rotation !== 0 ? this.rotatePoint(worldPoint, center, -rotation) : worldPoint;
           const hit = (el as Stroke).points.some(
-            p => Math.hypot(p.x - worldPoint.x, p.y - worldPoint.y) < hitDist
+            p => Math.hypot(p.x - testPoint.x, p.y - testPoint.y) < hitDist
           );
           if (hit) return el;
           continue;
@@ -685,6 +697,8 @@ export class Blackboard implements BlackboardAPI {
     }
 
     this.isDrawing = true;
+
+    if (e.pointerType === 'pen') this.usePressure = true;
 
     if (this.activeTool === 'pen' || this.activeTool === 'highlighter') {
       this.currentElement = {
@@ -1013,18 +1027,10 @@ export class Blackboard implements BlackboardAPI {
       const events = (e as any).getCoalescedEvents?.() ?? [e];
       for (const ce of events) {
         const p = this.getPoint(ce as PointerEvent);
-        const last = this.currentElement.points[this.currentElement.points.length - 1];
+        const pts = this.currentElement.points;
+        const last = pts[pts.length - 1];
         if (Math.hypot(p.x - last.x, p.y - last.y) >= 1) {
-          this.currentElement.points.push(p);
-        }
-      }
-      if (this.currentElement.points.length >= 3) {
-        const rawPoints = this.currentElement.points;
-        const lastFew = rawPoints.slice(Math.max(0, rawPoints.length - 4));
-        const interpolated = this.catmullRomInterpolate(lastFew, 0.5);
-        if (interpolated.length > 2) {
-          const existing = rawPoints.slice(0, rawPoints.length - lastFew.length + 1);
-          this.currentElement.points = [...existing, ...interpolated.slice(1)];
+          pts.push(p);
         }
       }
     } else {
@@ -1121,6 +1127,8 @@ export class Blackboard implements BlackboardAPI {
           { x: p.x, y: p.y, pressure: 0.5 },
           { x: p.x + 0.5, y: p.y + 0.5, pressure: 0.5 },
         ];
+      } else {
+        (this.currentElement as Stroke).points = this.catmullRomInterpolate((this.currentElement as Stroke).points, 0.5);
       }
     }
 
@@ -1340,8 +1348,8 @@ export class Blackboard implements BlackboardAPI {
         this.selectedIds.add(hit.id);
         this.renderAll();
       }
-      this.showContextMenu(e.clientX, e.clientY);
     }
+    this.showContextMenu(e.clientX, e.clientY);
   };
 
   private showContextMenu(clientX: number, clientY: number): void {
@@ -1350,31 +1358,36 @@ export class Blackboard implements BlackboardAPI {
     const vw = window.innerWidth;
     const vh = window.innerHeight;
     const menuW = mobile ? 150 : 160;
-    const menuH = mobile ? 200 : 280;
     let left = clientX;
     let top = clientY;
     if (left + menuW > vw) left = vw - menuW - 8;
-    if (top + menuH > vh) top = vh - menuH - 8;
     if (left < 8) left = 8;
     if (top < 8) top = 8;
+    const hasSelection = this.selectedIds.size > 0;
+    const hasOne = this.selectedIds.size === 1;
     const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
     menu.style.cssText = `
       position: fixed; left: ${left}px; top: ${top}px;
       background: ${THEMES[this.theme].canvasBg}; border: 1px solid ${THEMES[this.theme].gridColor};
       border-radius: 8px; padding: 4px; z-index: 1000; min-width: ${menuW}px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-family: system-ui, sans-serif;
+      max-height: ${vh - 16}px; overflow-y: auto;
     `;
     const items = [
-      { label: 'Delete', shortcut: 'Del', action: () => this.deleteSelected() },
-      { label: 'Duplicate', shortcut: 'Ctrl+D', action: () => this.duplicateSelected() },
-      { label: 'Group', shortcut: 'Ctrl+G', action: () => this.groupSelected() },
-      { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: () => this.ungroupSelected() },
+      { label: 'Delete', shortcut: 'Del', action: () => this.deleteSelected(), disabled: !hasSelection },
+      { label: 'Duplicate', shortcut: 'Ctrl+D', action: () => this.duplicateSelected(), disabled: !hasSelection },
+      { label: 'Group', shortcut: 'Ctrl+G', action: () => this.groupSelected(), disabled: this.selectedIds.size < 2 },
+      { label: 'Ungroup', shortcut: 'Ctrl+Shift+G', action: () => this.ungroupSelected(), disabled: !hasSelection },
       { type: 'separator' as const },
-      { label: 'Bring Forward', shortcut: ']', action: () => this.bringForward() },
-      { label: 'Send Backward', shortcut: '[', action: () => this.sendBackward() },
-      { label: 'Bring to Front', shortcut: 'Ctrl+]', action: () => this.bringToFront() },
-      { label: 'Send to Back', shortcut: 'Ctrl+[', action: () => this.sendToBack() },
+      { label: 'Bring Forward', shortcut: ']', action: () => this.bringForward(), disabled: !hasOne },
+      { label: 'Send Backward', shortcut: '[', action: () => this.sendBackward(), disabled: !hasOne },
+      { label: 'Bring to Front', shortcut: 'Ctrl+]', action: () => this.bringToFront(), disabled: !hasOne },
+      { label: 'Send to Back', shortcut: 'Ctrl+[', action: () => this.sendToBack(), disabled: !hasOne },
+      { type: 'separator' as const },
+      { label: 'Select All', shortcut: 'Ctrl+A', action: () => this.selectAll(), disabled: this.elements.length === 0 },
     ];
+    let firstItem: HTMLButtonElement | null = null;
     for (const item of items) {
       if (item.type === 'separator') {
         const sep = document.createElement('div');
@@ -1383,24 +1396,57 @@ export class Blackboard implements BlackboardAPI {
         continue;
       }
       const btn = document.createElement('button');
-      btn.style.cssText = `
-        display: flex; justify-content: space-between; align-items: center;
-        width: 100%; padding: ${mobile ? 10 : 6}px 12px; border: none; background: transparent;
-        cursor: pointer; font-size: ${mobile ? 15 : 13}px; border-radius: 4px; color: ${THEMES[this.theme].gridLabelColor};
-        font-family: inherit;
-      `;
+      btn.setAttribute('role', 'menuitem');
+      if (item.disabled) {
+        btn.disabled = true;
+        btn.style.cssText = `
+          display: flex; justify-content: space-between; align-items: center;
+          width: 100%; padding: ${mobile ? 10 : 6}px 12px; border: none; background: transparent;
+          cursor: default; font-size: ${mobile ? 15 : 13}px; border-radius: 4px;
+          color: ${THEMES[this.theme].gridLabelColor}; opacity: 0.35; font-family: inherit;
+        `;
+      } else {
+        btn.style.cssText = `
+          display: flex; justify-content: space-between; align-items: center;
+          width: 100%; padding: ${mobile ? 10 : 6}px 12px; border: none; background: transparent;
+          cursor: pointer; font-size: ${mobile ? 15 : 13}px; border-radius: 4px;
+          color: ${THEMES[this.theme].gridLabelColor}; font-family: inherit;
+        `;
+        btn.addEventListener('mouseenter', () => { btn.style.background = THEMES[this.theme].gridColor; });
+        btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
+        btn.addEventListener('click', (ev) => { ev.stopPropagation(); item.action(); this.dismissContextMenu(); });
+        if (!firstItem) firstItem = btn;
+      }
       btn.innerHTML = `<span>${item.label}</span><span style="font-size: 11px; opacity: 0.5;">${item.shortcut}</span>`;
-      btn.addEventListener('mouseenter', () => { btn.style.background = THEMES[this.theme].gridColor; });
-      btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
-      btn.addEventListener('click', (ev) => { ev.stopPropagation(); item.action(); this.dismissContextMenu(); });
       menu.appendChild(btn);
     }
     document.body.appendChild(menu);
     this.contextMenu = menu;
+
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.bottom > vh - 8) {
+      menu.style.top = Math.max(8, vh - menuRect.height - 8) + 'px';
+    }
+    if (!firstItem) firstItem = menu.querySelector('button:not([disabled])') as HTMLButtonElement | null;
+    if (firstItem) firstItem.focus();
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { this.dismissContextMenu(); return; }
+      const btns = [...menu.querySelectorAll('button:not([disabled])')] as HTMLButtonElement[];
+      const idx = btns.indexOf(document.activeElement as HTMLButtonElement);
+      if (e.key === 'ArrowDown') { e.preventDefault(); btns[(idx + 1) % btns.length]?.focus(); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); btns[(idx - 1 + btns.length) % btns.length]?.focus(); }
+    };
+    menu.addEventListener('keydown', onKey);
+    this.contextMenuKeyHandler = onKey;
   }
 
   private dismissContextMenu(): void {
     if (this.contextMenu) {
+      if (this.contextMenuKeyHandler) {
+        this.contextMenu.removeEventListener('keydown', this.contextMenuKeyHandler);
+        this.contextMenuKeyHandler = null;
+      }
       this.contextMenu.remove();
       this.contextMenu = null;
     }
@@ -1538,6 +1584,8 @@ export class Blackboard implements BlackboardAPI {
     this.flushLive();
   }
 
+  private hintEl: HTMLDivElement | null = null;
+
   private renderStatic(): void {
     const ctx = this.staticCtx;
     const t = THEMES[this.theme];
@@ -1551,12 +1599,18 @@ export class Blackboard implements BlackboardAPI {
     for (const el of this.elements) this.drawElement(ctx, el);
     ctx.restore();
     if (this.elements.length === 0 && !this.currentElement) {
-      ctx.fillStyle = t.hintColor;
+      if (!this.hintEl) {
+        this.hintEl = document.createElement('div');
+        this.hintEl.className = 'casuya-hint';
+        this.hintEl.style.cssText = `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;user-select:none;font-family:system-ui,sans-serif;`;
+        this.canvasWrapper.appendChild(this.hintEl);
+      }
       const hintSize = IS_MOBILE() ? 11 : 14;
-      ctx.font = `${hintSize}px system-ui, -apple-system, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(IS_MOBILE() ? 'Tap a tool to start' : 'Choose a tool and start drawing', this.width / 2, this.height / 2);
+      this.hintEl.textContent = IS_MOBILE() ? 'Tap a tool to start' : 'Choose a tool and start drawing';
+      this.hintEl.style.cssText = `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);pointer-events:none;user-select:none;font-family:system-ui,sans-serif;font-size:${hintSize}px;color:${t.hintColor};`;
+      this.hintEl.style.display = '';
+    } else if (this.hintEl) {
+      this.hintEl.style.display = 'none';
     }
   }
 
@@ -1631,16 +1685,19 @@ export class Blackboard implements BlackboardAPI {
       if (showLabels) {
         ctx.fillStyle = t.gridLabelColor;
         ctx.font = `${10 / this.camera.zoom}px system-ui, sans-serif`;
+        const labelOffset = spacing;
         ctx.textAlign = 'center';
         if (0 >= vt && 0 <= vb) {
           for (let x = startX; x <= endX; x += spacing * 2) {
-            if (x !== 0) ctx.fillText(String(x / spacing), x, 14 / this.camera.zoom);
+            if (Math.abs(x) < labelOffset) continue;
+            ctx.fillText(String(x / spacing), x, 14 / this.camera.zoom);
           }
         }
         ctx.textAlign = 'right';
         if (0 >= vl && 0 <= vr) {
           for (let y = startY; y <= endY; y += spacing * 2) {
-            if (y !== 0) ctx.fillText(String(-y / spacing), -6 / this.camera.zoom, y + 4 / this.camera.zoom);
+            if (Math.abs(y) < labelOffset) continue;
+            ctx.fillText(String(-y / spacing), -6 / this.camera.zoom, y + 4 / this.camera.zoom);
           }
         }
       }
@@ -1683,7 +1740,7 @@ export class Blackboard implements BlackboardAPI {
     }
     const outlinePoints = getStroke(
       points.map(p => [p.x, p.y, p.pressure ?? 0.5]),
-      { size: width, thinning: tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: tool !== 'highlighter' }
+      { size: width, thinning: tool === 'highlighter' ? 0 : 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: tool === 'highlighter' ? false : !this.usePressure }
     );
     const pathData = getSvgPathFromStroke(outlinePoints);
     if (pathData) ctx.fill(new Path2D(pathData));
@@ -2282,10 +2339,39 @@ export class Blackboard implements BlackboardAPI {
   rotateSelected(angle: number): void {
     if (this.selectedIds.size === 0) return;
     this.pushUndo();
-    for (const id of this.selectedIds) {
-      const el = this.elements.find(e => e.id === id);
-      if (!el) continue;
-      el.rotation = ((el.rotation ?? 0) + angle) % (Math.PI * 2);
+    const ids = [...this.selectedIds];
+    if (ids.length === 1) {
+      const el = this.elements.find(e => e.id === ids[0]);
+      if (el) el.rotation = ((el.rotation ?? 0) + angle) % (Math.PI * 2);
+    } else {
+      let cx = 0, cy = 0, count = 0;
+      for (const id of ids) {
+        const el = this.elements.find(e => e.id === id);
+        if (!el) continue;
+        const b = this.getLocalBounds(el);
+        cx += b.x + b.w / 2;
+        cy += b.y + b.h / 2;
+        count++;
+      }
+      if (count > 0) { cx /= count; cy /= count; }
+      const center: Point = { x: cx, y: cy };
+      for (const id of ids) {
+        const el = this.elements.find(e => e.id === id);
+        if (!el) continue;
+        if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
+          const s = el as Stroke;
+          s.points = s.points.map(p => this.rotatePoint(p, center, angle));
+        } else if (el.tool === 'text') {
+          (el as TextElement).position = this.rotatePoint((el as TextElement).position, center, angle);
+        } else if (el.tool === 'image') {
+          (el as ImageElement).position = this.rotatePoint((el as ImageElement).position, center, angle);
+        } else {
+          const s = el as Shape;
+          s.start = this.rotatePoint(s.start, center, angle);
+          s.end = this.rotatePoint(s.end, center, angle);
+        }
+        el.rotation = ((el.rotation ?? 0) + angle) % (Math.PI * 2);
+      }
     }
     this.renderAll();
     this.emit('change');
