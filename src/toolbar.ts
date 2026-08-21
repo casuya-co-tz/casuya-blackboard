@@ -374,7 +374,8 @@ export function updateToolbarState(
   theme: 'light' | 'dark',
   zoom: number,
   fontSize?: number,
-  roughness?: number
+  roughness?: number,
+  graphEnabled?: boolean
 ): void {
   const themeDef = TOOLBAR_THEMES[theme];
 
@@ -444,6 +445,16 @@ export function updateToolbarState(
   tb.themeBtn.style.color = themeDef.btnColor;
   tb.themeBtn.style.background = 'transparent';
 
+  if (graphEnabled) {
+    tb.graphBtn.style.background = themeDef.activeBg;
+    tb.graphBtn.style.color = themeDef.activeColor;
+    tb.graphBtn.dataset.active = 'true';
+  } else {
+    tb.graphBtn.style.background = 'transparent';
+    tb.graphBtn.style.color = themeDef.btnColor;
+    delete tb.graphBtn.dataset.active;
+  }
+
   tb.zoomLabel.textContent = Math.round(zoom * 100) + '%';
   tb.zoomLabel.style.color = themeDef.btnColor;
 
@@ -453,7 +464,7 @@ export function updateToolbarState(
     (b as HTMLElement).style.background = 'transparent';
   });
 
-  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.themeBtn] as HTMLElement[];
+  const actionBtns = [tb.undoBtn, tb.redoBtn, tb.graphBtn, tb.fillBtn, tb.roughnessBtn, tb.groupBtn, tb.ungroupBtn, tb.rotateBtn, tb.svgBtn, tb.themeBtn] as HTMLElement[];
   for (const btn of actionBtns) {
     if (!btn) continue;
     if (!btn.dataset.active) {

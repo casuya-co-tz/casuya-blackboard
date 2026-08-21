@@ -4,6 +4,15 @@ import { createToolbar, updateToolbarState } from './toolbar';
 
 const IS_MOBILE = () => window.innerWidth <= 640;
 
+function uid(): string {
+  try { return uid(); } catch { return 'xxxx-xxxx-xxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16)); }
+}
+
+function isInInput(el: EventTarget | null): boolean {
+  if (!el || !(el instanceof HTMLElement)) return false;
+  return el.closest('input, textarea, [contenteditable="true"], select') !== null;
+}
+
 const MOBILE_STYLES = `
 .casuya-blackboard { border-radius: 8px !important; box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important; }
 .casuya-blackboard .casuya-toast { font-size: 11px !important; padding: 6px 12px !important; bottom: 8px !important; }
@@ -83,6 +92,7 @@ export class Blackboard implements BlackboardAPI {
   private panCameraStart = { x: 0, y: 0 };
   private textInput: HTMLTextAreaElement | null = null;
   private editingTextId: string | null = null;
+  private editingTextOriginal: TextElement | null = null;
   private activePointerId: number | null = null;
   private activePointerType: string = 'mouse';
   private lastPointerWorld: Point | null = null;
@@ -91,6 +101,7 @@ export class Blackboard implements BlackboardAPI {
   private pinchStartDist = 0;
   private pinchStartZoom = 1;
   private pinchCenter: Point = { x: 0, y: 0 };
+  private pinchStartCamera: Point = { x: 0, y: 0 };
   private contextMenu: HTMLDivElement | null = null;
   private longPressTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressStart: Point | null = null;
@@ -104,6 +115,8 @@ export class Blackboard implements BlackboardAPI {
   private roughness = 0;
   private alignmentGuides: { x?: number; y?: number } = {};
   private imageCache = new Map<string, HTMLImageElement>();
+  private resizeObserver: ResizeObserver | null = null;
+  private undoDirty = false;
 
   constructor(options: BlackboardOptions) {
     this.container = options.container;
@@ -177,7 +190,7 @@ export class Blackboard implements BlackboardAPI {
     }
 
     if (typeof ResizeObserver !== 'undefined') {
-      const ro = new ResizeObserver(entries => {
+      this.resizeObserver = new ResizeObserver(entries => {
         for (const entry of entries) {
           const { width: w, height: h } = entry.contentRect;
           if (w > 0 && h > 0) {
@@ -185,7 +198,7 @@ export class Blackboard implements BlackboardAPI {
           }
         }
       });
-      ro.observe(this.container);
+      this.resizeObserver.observe(this.container);
     }
 
     this.staticCtx = this.staticCanvas.getContext('2d')!;
@@ -204,6 +217,8 @@ export class Blackboard implements BlackboardAPI {
     if (this.undoStack.length > Blackboard.MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
   }
+
+  private commitUndo(): void {}
 
   private screenToWorld(screenX: number, screenY: number): Point {
     return { x: screenX / this.camera.zoom + this.camera.x, y: screenY / this.camera.zoom + this.camera.y };
@@ -523,6 +538,11 @@ export class Blackboard implements BlackboardAPI {
 
     this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     if (this.activePointers.size === 2) {
+      if (this.isDrawing) {
+        this.isDrawing = false;
+        this.currentElement = null;
+        this.flushLive();
+      }
       this.startPinch();
       return;
     }
@@ -545,7 +565,7 @@ export class Blackboard implements BlackboardAPI {
     
     const point = this.getPoint(e);
 
-    if (e.pointerType === 'touch') {
+    if (e.pointerType === 'touch' && this.activeTool === 'select') {
       this.longPressStart = point;
       this.longPressTimer = setTimeout(() => {
         if (this.longPressStart) {
@@ -556,6 +576,8 @@ export class Blackboard implements BlackboardAPI {
               this.selectedIds.add(hit.id);
               this.renderAll();
             }
+            this.isDrawing = false;
+            this.currentElement = null;
             this.showContextMenu(e.clientX, e.clientY);
           }
         }
@@ -635,7 +657,7 @@ export class Blackboard implements BlackboardAPI {
 
     if (this.activeTool === 'pen') {
       this.currentElement = {
-        id: crypto.randomUUID(),
+        id: uid(),
         tool: 'pen',
         points: [point],
         color: this.strokeColor,
@@ -645,7 +667,7 @@ export class Blackboard implements BlackboardAPI {
     } else {
       const snapped = this.snapToGrid(point);
       this.currentElement = {
-        id: crypto.randomUUID(),
+        id: uid(),
         tool: this.activeTool,
         start: snapped,
         end: snapped,
@@ -821,6 +843,7 @@ export class Blackboard implements BlackboardAPI {
     const pts = Array.from(this.activePointers.values());
     this.pinchStartDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
     this.pinchStartZoom = this.camera.zoom;
+    this.pinchStartCamera = { x: this.camera.x, y: this.camera.y };
     const rect = this.liveCanvas.getBoundingClientRect();
     this.pinchCenter = {
       x: (pts[0].x + pts[1].x) / 2 - rect.left,
@@ -832,12 +855,32 @@ export class Blackboard implements BlackboardAPI {
     if (this.activePointers.has(e.pointerId)) {
       this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
     }
+    if (this.longPressTimer && this.longPressStart) {
+      const dx = e.clientX - (this.activePointers.get(e.pointerId)?.x ?? e.clientX);
+      const dy = e.clientY - (this.activePointers.get(e.pointerId)?.y ?? e.clientY);
+      if (Math.hypot(dx, dy) > 10) {
+        clearTimeout(this.longPressTimer);
+        this.longPressTimer = null;
+        this.longPressStart = null;
+      }
+    }
     if (this.activePointers.size === 2) {
       const pts = Array.from(this.activePointers.values());
       const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      const rect = this.liveCanvas.getBoundingClientRect();
+      const curCenter = {
+        x: (pts[0].x + pts[1].x) / 2 - rect.left,
+        y: (pts[0].y + pts[1].y) / 2 - rect.top,
+      };
       if (this.pinchStartDist > 0) {
         const newZoom = this.pinchStartZoom * (dist / this.pinchStartDist);
         this.zoomTo(newZoom, this.pinchCenter);
+        const panDx = (curCenter.x - this.pinchCenter.x) / this.camera.zoom;
+        const panDy = (curCenter.y - this.pinchCenter.y) / this.camera.zoom;
+        this.camera.x = this.pinchStartCamera.x - panDx;
+        this.camera.y = this.pinchStartCamera.y - panDy;
+        this.renderAll();
+        this.updateToolbar();
       }
       return;
     }
@@ -1022,7 +1065,7 @@ export class Blackboard implements BlackboardAPI {
       }
     }
 
-    this.pushUndo();
+    this.commitUndo();
     this.elements.push(this.currentElement);
     this.currentElement = null;
     this.flushLive();
@@ -1048,10 +1091,17 @@ export class Blackboard implements BlackboardAPI {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (this.textInput) return;
+    if (isInInput(e.target)) return;
 
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
       e.preventDefault();
       e.shiftKey ? this.redo() : this.undo();
+      return;
+    }
+
+    if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+      e.preventDefault();
+      this.redo();
       return;
     }
 
@@ -1091,13 +1141,34 @@ export class Blackboard implements BlackboardAPI {
       return;
     }
 
+    if ((e.ctrlKey || e.metaKey) && e.key === 'x') {
+      e.preventDefault();
+      this.copySelected();
+      this.deleteSelected();
+      return;
+    }
+
     if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
       e.preventDefault();
       this.selectAll();
       return;
     }
 
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (this.selectedIds.size > 0) {
+        this.selectedIds.clear();
+        this.renderAll();
+      } else if (this.isDrawing && this.currentElement) {
+        this.isDrawing = false;
+        this.currentElement = null;
+        this.flushLive();
+      }
+      return;
+    }
+
     if (e.key === ' ') {
+      e.preventDefault();
       if (!this.isSpaceDown) {
         this.isSpaceDown = true;
         this.liveCanvas.style.cursor = 'grab';
@@ -1106,8 +1177,17 @@ export class Blackboard implements BlackboardAPI {
     }
 
     if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
       this.deleteSelected();
       return;
+    }
+
+    if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+      const nudge = e.shiftKey ? 10 : 1;
+      if (e.key === 'ArrowLeft') { e.preventDefault(); this.nudgeSelected(-nudge, 0); return; }
+      if (e.key === 'ArrowRight') { e.preventDefault(); this.nudgeSelected(nudge, 0); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this.nudgeSelected(0, -nudge); return; }
+      if (e.key === 'ArrowDown') { e.preventDefault(); this.nudgeSelected(0, nudge); return; }
     }
 
     if ((e.ctrlKey || e.metaKey) && e.key === ']') {
@@ -1153,18 +1233,27 @@ export class Blackboard implements BlackboardAPI {
       return;
     }
 
+    if (e.key === '?') {
+      e.preventDefault();
+      this.showShortcutHelp();
+      return;
+    }
+
     const keyToolMap: Record<string, Tool> = {
-      'v': 'select', 'h': 'hand', 'p': 'pen', 'd': 'pen',
+      'v': 'select', 'h': 'hand', 'p': 'pen',
       't': 'text', 'l': 'line', 'r': 'rect', 'o': 'circle',
       'a': 'arrow', 'e': 'eraser'
     };
 
-    if ((e.ctrlKey || e.metaKey) && !['z','+','-','0','d','c','v','a','g',']','['].includes(e.key.toLowerCase())) {
+    if ((e.ctrlKey || e.metaKey) && !['z','+','-','0','d','c','v','x','a','g',']','['].includes(e.key.toLowerCase())) {
       return;
     }
 
     const tool = keyToolMap[e.key.toLowerCase()];
-    if (tool) this.setTool(tool);
+    if (tool) {
+      this.commitText();
+      this.setTool(tool);
+    }
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -1259,9 +1348,10 @@ export class Blackboard implements BlackboardAPI {
     this.dismissContextMenu();
   };
 
-  private deleteSelected(): void {
+  private   deleteSelected(): void {
     if (this.selectedIds.size === 0) return;
     this.pushUndo();
+    this.commitUndo();
     this.elements = this.elements.filter(e => !this.selectedIds.has(e.id));
     this.selectedIds.clear();
     this.renderAll();
@@ -1278,10 +1368,12 @@ export class Blackboard implements BlackboardAPI {
 
   private startTextEdit(worldX: number, worldY: number, existing?: TextElement): void {
     this.commitText();
+    this.editingTextOriginal = existing ? JSON.parse(JSON.stringify(existing)) : null;
     const screen = this.worldToScreen(worldX, worldY);
     const ta = document.createElement('textarea');
     const mobile = IS_MOBILE();
-    const taFontSize = Math.max(mobile ? 16 : 0, (existing?.fontSize ?? this.fontSize) * this.camera.zoom);
+    const fontSize = existing?.fontSize ?? this.fontSize;
+    const taFontSize = Math.max(mobile ? 16 : 0, fontSize * this.camera.zoom);
     ta.style.cssText = `
       position: absolute; left: ${screen.x}px; top: ${screen.y}px;
       min-width: ${mobile ? 80 : 60}px; min-height: 28px;
@@ -1292,12 +1384,15 @@ export class Blackboard implements BlackboardAPI {
       color: ${existing?.color ?? this.strokeColor};
       outline: none; resize: none; overflow: hidden;
       z-index: 10; box-sizing: border-box;
-      line-height: 1.4; white-space: pre;
+      line-height: 1.4; white-space: pre-wrap;
     `;
     ta.value = existing?.content ?? '';
     ta.addEventListener('blur', () => this.commitText());
     ta.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape') { ta.blur(); }
+      if (ev.key === 'Escape') {
+        this.cancelText();
+        return;
+      }
       ev.stopPropagation();
     });
     ta.addEventListener('input', () => {
@@ -1309,11 +1404,24 @@ export class Blackboard implements BlackboardAPI {
     this.textInput = ta;
     this.editingTextId = existing?.id ?? null;
     if (existing) {
-      this.pushUndo();
       this.elements = this.elements.filter(e => e.id !== existing.id);
       this.renderStatic();
     }
     setTimeout(() => { ta.focus(); ta.style.height = ta.scrollHeight + 'px'; }, 0);
+  }
+
+  private cancelText(): void {
+    if (!this.textInput) return;
+    const ta = this.textInput;
+    this.textInput = null;
+    ta.remove();
+    if (this.editingTextOriginal) {
+      this.elements.push(this.editingTextOriginal);
+      this.renderStatic();
+      this.emit('change');
+    }
+    this.editingTextId = null;
+    this.editingTextOriginal = null;
   }
 
   private commitText(): void {
@@ -1322,22 +1430,24 @@ export class Blackboard implements BlackboardAPI {
     const content = ta.value.trim();
     this.textInput = null;
     ta.remove();
+    this.editingTextOriginal = null;
     if (content) {
       const screenX = parseFloat(ta.style.left);
       const screenY = parseFloat(ta.style.top);
       const world = this.screenToWorld(screenX, screenY);
+      const prevEl = this.editingTextId ? this.elements.find(e => e.id === this.editingTextId) : null;
       const el: TextElement = {
-        id: this.editingTextId ?? crypto.randomUUID(),
+        id: this.editingTextId ?? uid(),
         tool: 'text',
         position: world,
         content,
-        fontSize: this.fontSize,
+        fontSize: (prevEl && 'fontSize' in prevEl) ? (prevEl as TextElement).fontSize : this.fontSize,
         fontFamily: 'system-ui, -apple-system, sans-serif',
         color: ta.style.color,
         width: 1,
         opacity: this.strokeOpacity,
       };
-      if (!this.editingTextId) this.pushUndo();
+      this.commitUndo();
       this.elements.push(el);
       this.renderStatic();
       this.emit('change');
@@ -1808,7 +1918,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private updateToolbar(): void {
-    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness);
+    updateToolbarState(this.toolbar, this.activeTool, this.strokeColor, this.strokeWidth, this.fillEnabled, this.theme, this.camera.zoom, this.fontSize, this.roughness, this.graph.enabled);
   }
 
   setTool(tool: Tool): void {
@@ -2003,6 +2113,53 @@ export class Blackboard implements BlackboardAPI {
     this.emit('change');
   }
 
+  nudgeSelected(dx: number, dy: number): void {
+    if (this.selectedIds.size === 0) return;
+    this.pushUndo();
+    for (const id of this.selectedIds) {
+      const el = this.elements.find(e => e.id === id);
+      if (!el) continue;
+      if (el.tool === 'pen' || el.tool === 'eraser') {
+        const s = el as Stroke;
+        s.points = s.points.map(p => ({ x: p.x + dx, y: p.y + dy, pressure: p.pressure }));
+      } else if (el.tool === 'text') {
+        (el as TextElement).position = { x: (el as TextElement).position.x + dx, y: (el as TextElement).position.y + dy };
+      } else if (el.tool === 'image') {
+        (el as ImageElement).position = { x: (el as ImageElement).position.x + dx, y: (el as ImageElement).position.y + dy };
+      } else {
+        const s = el as Shape;
+        s.start = { x: s.start.x + dx, y: s.start.y + dy };
+        s.end = { x: s.end.x + dx, y: s.end.y + dy };
+      }
+    }
+    this.renderAll();
+    this.emit('change');
+  }
+
+  showShortcutHelp(): void {
+    if (this.contextMenu) { this.dismissContextMenu(); return; }
+    const t = THEMES[this.theme];
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2000;display:flex;align-items:center;justify-content:center;`;
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) overlay.remove(); });
+    const panel = document.createElement('div');
+    panel.style.cssText = `background:${t.canvasBg};color:${t.gridLabelColor};border:1px solid ${t.gridColor};border-radius:12px;padding:20px 24px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6;`;
+    const shortcuts = [
+      ['P','Pen'],['T','Text'],['L','Line'],['R','Rect'],['O','Circle'],['A','Arrow'],['E','Eraser'],['V','Select'],['H','Hand'],
+      ['Space+Drag','Pan'],['Esc','Deselect / Cancel'],['Del','Delete selected'],
+      ['Arrow keys','Nudge (Shift=10px)'],['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],
+      ['Ctrl+D','Duplicate'],['Ctrl+C','Copy'],['Ctrl+V','Paste'],['Ctrl+X','Cut'],['Ctrl+A','Select all'],
+      ['Ctrl+G','Group'],['Ctrl+Shift+G','Ungroup'],['Ctrl+]','Bring forward'],['Ctrl+[','Send backward'],
+      ['Shift+R','Rotate 15°'],['Ctrl+Shift+S','Export SVG'],['?','This help'],
+    ];
+    let html = `<div style="font-size:16px;font-weight:600;margin-bottom:12px;color:${t.gridAxisColor}">Keyboard Shortcuts</div>`;
+    for (const [key, desc] of shortcuts) html += `<div style="display:flex;justify-content:space-between;padding:2px 0"><kbd style="background:${t.gridColor};padding:1px 6px;border-radius:4px;font-size:12px;min-width:90px;text-align:center">${key}</kbd><span>${desc}</span></div>`;
+    panel.innerHTML = html;
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    this.contextMenu = overlay;
+  }
+
   duplicateSelected(): void {
     if (this.selectedIds.size === 0) return;
     this.pushUndo();
@@ -2012,9 +2169,9 @@ export class Blackboard implements BlackboardAPI {
       const el = this.elements.find(e => e.id === id);
       if (!el) continue;
       const clone = JSON.parse(JSON.stringify(el));
-      clone.id = crypto.randomUUID();
+      clone.id = uid();
       if (el.groupId) {
-        if (!groupMap.has(el.groupId)) groupMap.set(el.groupId, crypto.randomUUID());
+        if (!groupMap.has(el.groupId)) groupMap.set(el.groupId, uid());
         clone.groupId = groupMap.get(el.groupId);
       } else {
         clone.groupId = undefined;
@@ -2056,7 +2213,7 @@ export class Blackboard implements BlackboardAPI {
       const el = this.elements.find(e => e.id === id);
       if (!el) continue;
       const clone = JSON.parse(JSON.stringify(el));
-      clone.id = crypto.randomUUID();
+      clone.id = uid();
       this.clipboard.push(clone);
     }
   }
@@ -2065,9 +2222,14 @@ export class Blackboard implements BlackboardAPI {
     if (this.clipboard.length === 0) return;
     this.pushUndo();
     const newIds = new Set<string>();
+    const groupMap = new Map<string, string>();
     for (const el of this.clipboard) {
       const clone = JSON.parse(JSON.stringify(el));
-      clone.id = crypto.randomUUID();
+      clone.id = uid();
+      if (clone.groupId) {
+        if (!groupMap.has(clone.groupId)) groupMap.set(clone.groupId, uid());
+        clone.groupId = groupMap.get(clone.groupId);
+      }
       if ('start' in clone) { clone.start = { x: clone.start.x + 20, y: clone.start.y + 20 }; clone.end = { x: clone.end.x + 20, y: clone.end.y + 20 }; }
       if ('position' in clone) { clone.position = { x: clone.position.x + 20, y: clone.position.y + 20 }; }
       if ('points' in clone) { clone.points = clone.points.map((p: any) => ({ x: p.x + 20, y: p.y + 20, pressure: p.pressure })); }
@@ -2189,7 +2351,7 @@ export class Blackboard implements BlackboardAPI {
             const centerY = this.height / 2;
             const world = this.screenToWorld(centerX, centerY);
             const el: ImageElement = {
-              id: crypto.randomUUID(),
+              id: uid(),
               tool: 'image',
               position: { x: world.x - img.width / 2, y: world.y - img.height / 2 },
               width: img.width,
@@ -2232,7 +2394,7 @@ export class Blackboard implements BlackboardAPI {
         const img = new Image();
         img.onload = () => {
           const el: ImageElement = {
-            id: crypto.randomUUID(),
+            id: uid(),
             tool: 'image',
             position: { x: world.x - img.width / 2, y: world.y - img.height / 2 },
             width: img.width,
@@ -2268,7 +2430,7 @@ export class Blackboard implements BlackboardAPI {
   groupSelected(): void {
     if (this.selectedIds.size < 2) return;
     this.pushUndo();
-    const groupId = crypto.randomUUID();
+    const groupId = uid();
     for (const id of this.selectedIds) {
       const el = this.elements.find(e => e.id === id);
       if (el) el.groupId = groupId;
@@ -2305,11 +2467,9 @@ export class Blackboard implements BlackboardAPI {
     const vh = maxY - minY + pad * 2;
     const parts: string[] = [];
     parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vx} ${vy} ${vw} ${vh}" width="${vw}" height="${vh}">`);
-    parts.push(`<g transform="scale(${1/this.camera.zoom}) translate(${-this.camera.x}, ${-this.camera.y})">`);
     for (const el of this.elements) {
       parts.push(this.elementToSVG(el));
     }
-    parts.push('</g>');
     parts.push('</svg>');
     return parts.join('\n');
   }
@@ -2416,6 +2576,8 @@ export class Blackboard implements BlackboardAPI {
   destroy(): void {
     this.detachEvents();
     if (this.animFrameId) cancelAnimationFrame(this.animFrameId);
+    if (this.resizeObserver) { this.resizeObserver.disconnect(); this.resizeObserver = null; }
+    this.dismissContextMenu();
     this.imageCache.clear();
     this.root.remove();
   }
