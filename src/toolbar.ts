@@ -100,6 +100,7 @@ const TOOLBAR_STYLES = `
   cursor: pointer; font-size: 11px; min-width: 40px; text-align: center; user-select: none;
   padding: 0 4px; transition: color 0.15s ease;
 }
+.casuya-tool-group, .casuya-color-group, .casuya-action-group { display: flex; flex-wrap: wrap; }
 @media (max-width: 640px) {
   .casuya-toolbar-row {
     flex-wrap: nowrap !important;
@@ -111,16 +112,15 @@ const TOOLBAR_STYLES = `
   }
   .casuya-toolbar-row::-webkit-scrollbar { display: none; }
   .casuya-toolbar-row > .casuya-toolbar-sep { display: none; }
+  .casuya-tool-group, .casuya-color-group, .casuya-action-group { flex-wrap: nowrap !important; }
   .casuya-toolbar-btn { min-width: 34px; min-height: 34px; height: 34px; padding: 2px !important; }
   .casuya-toolbar-label { display: none !important; }
   .casuya-action-btn { width: 30px; height: 30px; font-size: 13px; }
   .casuya-swatch { width: 20px; height: 20px; }
   .casuya-color-picker { width: 20px; height: 20px; }
-  .casuya-color-group { flex-wrap: nowrap !important; width: auto !important; max-width: none !important; order: unset !important; gap: 3px !important; }
-  .casuya-width-group { order: unset !important; gap: 4px !important; }
+  .casuya-width-group { gap: 4px !important; }
   .casuya-width-group input[type="range"] { width: 48px !important; }
-  .casuya-action-group { flex-wrap: nowrap !important; order: unset !important; gap: 2px !important; }
-  .casuya-zoom-group { order: unset !important; margin-left: 0 !important; gap: 0 !important; }
+  .casuya-zoom-group { gap: 0 !important; }
   .casuya-zoom-btn { width: 26px; height: 26px; font-size: 14px; }
   .casuya-zoom-label { font-size: 10px; min-width: 32px; }
   .casuya-tooltip { display: none !important; }
@@ -154,7 +154,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   row.className = 'casuya-toolbar-row';
   row.style.cssText = `
     display: flex; align-items: center; gap: 6px;
-    padding: 6px 10px; flex-wrap: wrap;
+    padding: 6px 10px;
   `;
 
   const tooltipEl = document.createElement('div');
@@ -162,7 +162,8 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
 
   const toolButtons = new Map<Tool, HTMLButtonElement>();
   const toolGroup = document.createElement('div');
-  toolGroup.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap;';
+  toolGroup.className = 'casuya-tool-group';
+  toolGroup.style.cssText = 'display: flex; gap: 4px;';
 
   for (const tool of TOOL_ORDER) {
     const btn = document.createElement('button');
@@ -195,7 +196,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
 
   const colorGroup = document.createElement('div');
   colorGroup.className = 'casuya-color-group';
-  colorGroup.style.cssText = 'display: flex; gap: 4px; align-items: center; flex-wrap: wrap;';
+  colorGroup.style.cssText = 'display: flex; gap: 4px; align-items: center;';
   for (const color of COLORS) {
     const swatch = document.createElement('button');
     swatch.className = 'casuya-swatch';
@@ -283,7 +284,7 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
 
   const actionGroup = document.createElement('div');
   actionGroup.className = 'casuya-action-group';
-  actionGroup.style.cssText = 'display: flex; gap: 4px; flex-wrap: wrap;';
+  actionGroup.style.cssText = 'display: flex; gap: 4px;';
   actionGroup.appendChild(undoBtn);
   actionGroup.appendChild(redoBtn);
   actionGroup.appendChild(clearBtn);
