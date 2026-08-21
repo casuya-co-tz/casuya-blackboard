@@ -1,4 +1,4 @@
-export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'text' | 'line' | 'rect' | 'circle' | 'arrow' | 'eraser';
+export type Tool = 'select' | 'hand' | 'pen' | 'highlighter' | 'text' | 'line' | 'rect' | 'circle' | 'arrow' | 'eraser' | 'laser' | 'diamond';
 
 export interface Point {
   x: number;
@@ -14,7 +14,7 @@ export interface Camera {
 
 export interface Stroke {
   id: string;
-  tool: 'pen' | 'eraser' | 'highlighter';
+  tool: 'pen' | 'eraser' | 'highlighter' | 'laser';
   points: Point[];
   color: string;
   width: number;
@@ -27,7 +27,7 @@ export interface Stroke {
 
 export interface Shape {
   id: string;
-  tool: 'line' | 'rect' | 'circle' | 'arrow';
+  tool: 'line' | 'rect' | 'circle' | 'arrow' | 'diamond';
   start: Point;
   end: Point;
   color: string;
@@ -41,6 +41,25 @@ export interface Shape {
   zIndex?: number;
   groupId?: string;
   rotation?: number;
+  label?: string;
+  boundTo?: string;
+  boundElements?: string[];
+}
+
+export interface LaTeXElement {
+  id: string;
+  tool: 'katex';
+  position: Point;
+  latex: string;
+  fontSize: number;
+  color: string;
+  opacity: number;
+  createdAt?: number;
+  zIndex?: number;
+  groupId?: string;
+  rotation?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface TextElement {
@@ -91,7 +110,7 @@ export interface BlackboardOptions {
   theme?: 'light' | 'dark';
 }
 
-export type Element = Stroke | Shape | TextElement | ImageElement;
+export type Element = Stroke | Shape | TextElement | ImageElement | LaTeXElement;
 
 export interface Snapshot {
   elements: Element[];
@@ -197,6 +216,14 @@ export interface BlackboardAPI {
   setClipboard(data: string): void;
   exportSelectedSVG(): string;
   exportSelectedPNG(): void;
+  exportPDF(): void;
+  startPresentation(): void;
+  stopPresentation(): void;
+  isPresenting(): boolean;
+  presentNext(): void;
+  presentPrev(): void;
+  insertLaTeX(latex: string): void;
+  getCollabState(): CollabState | null;
 }
 
 export const FONT_FAMILIES = [
@@ -226,5 +253,31 @@ export interface Viewport {
 export interface SelectionBox {
   elementId: string;
   bounds: BoundingBox;
+}
+
+export interface CollabUser {
+  id: string;
+  name: string;
+  color: string;
+  cursor?: Point;
+}
+
+export interface CollabState {
+  connected: boolean;
+  roomId: string;
+  users: CollabUser[];
+  localUser: CollabUser;
+}
+
+export interface CollabAdapter {
+  connect(roomId: string, user: CollabUser): void;
+  disconnect(): void;
+  sendElements(elements: Element[]): void;
+  sendCursor(cursor: Point): void;
+  onElementsUpdate(callback: (elements: Element[]) => void): void;
+  onCursorUpdate(callback: (userId: string, cursor: Point) => void): void;
+  onUserJoin(callback: (user: CollabUser) => void): void;
+  onUserLeave(callback: (userId: string) => void): void;
+  getState(): CollabState;
 }
 

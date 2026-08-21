@@ -29,17 +29,21 @@ const TOOL_ICONS: Record<Tool, string> = {
   circle: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>`,
   arrow: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>`,
   eraser: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>`,
+  laser: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v3m0 12v3m-9-9h3m12 0h3"/><path d="m4.9 4.9 2.1 2.1m9.9 9.9 2.1 2.1m-14 0 2.1-2.1m9.9-9.9 2.1-2.1"/></svg>`,
+  diamond: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L22 12L12 22L2 12Z"/></svg>`,
 };
 
 const TOOL_LABELS: Record<Tool, string> = {
   select: 'Select', hand: 'Hand', pen: 'Pen', highlighter: 'Marker', text: 'Text',
   line: 'Line', rect: 'Rect', circle: 'Circle', arrow: 'Arrow', eraser: 'Eraser',
+  laser: 'Laser', diamond: 'Diamond',
 };
 
 const TOOL_DESCRIPTIONS: Record<Tool, string> = {
   select: 'Select, move, resize (V)', hand: 'Pan canvas (H)', pen: 'Draw with pen (P)',
   highlighter: 'Highlight marker (M)', text: 'Add text (T)', line: 'Straight line (L)',
   rect: 'Rectangle (R)', circle: 'Ellipse (O)', arrow: 'Arrow (A)', eraser: 'Erase (E)',
+  laser: 'Laser pointer (B)', diamond: 'Diamond shape (N)',
 };
 
 const COLORS = ['#1e293b', '#dc2626', '#2563eb', '#16a34a', '#ca8a04', '#9333ea', '#ea580c', '#0891b2'];
@@ -163,8 +167,8 @@ function injectStyles(): void {
 type SectionId = 'write' | 'shapes' | 'text' | 'edit' | 'export';
 
 const SECTION_TOOLS: Record<SectionId, Tool[]> = {
-  write: ['pen', 'highlighter', 'eraser'],
-  shapes: ['line', 'rect', 'circle', 'arrow'],
+  write: ['pen', 'highlighter', 'eraser', 'laser'],
+  shapes: ['line', 'rect', 'circle', 'arrow', 'diamond'],
   text: ['text'],
   edit: ['select', 'hand'],
   export: [],
@@ -435,9 +439,11 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
     URL.revokeObjectURL(url);
   });
   const pngBtn = makeAction('\uD83D\uDDBC', 'Export PNG', () => board.exportPNG());
+  const pdfBtn = makeAction('\uD83D\uDCC4', 'Export PDF', () => board.exportPDF());
   const saveBtn = makeAction('\u2193', 'Save to browser', () => { board.saveToStorage(); board.showToast('\u2713 Saved'); });
   exportRow1.appendChild(svgBtn);
   exportRow1.appendChild(pngBtn);
+  exportRow1.appendChild(pdfBtn);
   exportRow1.appendChild(saveBtn);
   exportPanel.appendChild(exportRow1);
   const exportSep = document.createElement('div');
@@ -456,6 +462,21 @@ export function createToolbar(board: BlackboardAPI): ToolbarElements {
   exportRow2.appendChild(graphBtn);
   exportRow2.appendChild(themeBtn);
   exportPanel.appendChild(exportRow2);
+  const exportSep2 = document.createElement('div');
+  exportSep2.className = 'casuya-panel-sep';
+  exportPanel.appendChild(exportSep2);
+  const exportRow3 = document.createElement('div');
+  exportRow3.className = 'casuya-panel-row';
+  const presentBtn = makeAction('\u25B6', 'Presentation mode', () => {
+    if (board.isPresenting()) board.stopPresentation(); else board.startPresentation();
+  });
+  const latexBtn = makeAction('\u03A3', 'Insert LaTeX equation', () => {
+    const latex = prompt('Enter LaTeX expression:', 'E = mc^2');
+    if (latex) board.insertLaTeX(latex);
+  });
+  exportRow3.appendChild(presentBtn);
+  exportRow3.appendChild(latexBtn);
+  exportPanel.appendChild(exportRow3);
 
   // ── Assemble main bar ──
   mainRow.appendChild(makeSectionButton('write'));

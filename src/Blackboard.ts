@@ -1,4 +1,4 @@
-import type { Tool, Point, Stroke, Shape, TextElement, ImageElement, GraphConfig, BlackboardOptions, Element, Snapshot, BlackboardEvent, BlackboardEventCallback, Camera, ToolbarElements, BlackboardAPI } from './types';
+import type { Tool, Point, Stroke, Shape, TextElement, ImageElement, GraphConfig, BlackboardOptions, Element, Snapshot, BlackboardEvent, BlackboardEventCallback, Camera, ToolbarElements, BlackboardAPI, LaTeXElement, CollabState, CollabAdapter, CollabUser } from './types';
 import { createToolbar, updateToolbarState } from './toolbar';
 
 const IS_MOBILE = () => window.innerWidth <= 640;
@@ -121,6 +121,16 @@ export class Blackboard implements BlackboardAPI {
   private toastTimeout: ReturnType<typeof setTimeout> | null = null;
   private usePressure = false;
   private contextMenuKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+
+  private laserStrokes: { id: string; points: Point[]; color: string; width: number; opacity: number; createdAt: number }[] = [];
+  private laserAnimFrame: number | null = null;
+  private katexImageCache = new Map<string, HTMLImageElement>();
+  private presenterMode = false;
+  private presenterStep = 0;
+  private presenterOverlay: HTMLDivElement | null = null;
+  private collabAdapter: CollabAdapter | null = null;
+  private collabState: CollabState | null = null;
+  private remoteCursors = new Map<string, { user: CollabUser; cursor: Point }>();
 
   constructor(options: BlackboardOptions) {
     Blackboard.instanceCount++;
@@ -439,6 +449,64 @@ export class Blackboard implements BlackboardAPI {
     ctx.restore();
   }
 
+  private animateLaser = (): void => {
+    this.laserAnimFrame = null;
+    const now = Date.now();
+    const FADE_MS = 2000;
+    this.laserStrokes = this.laserStrokes.filter(s => now - s.createdAt < FADE_MS);
+    if (this.laserStrokes.length > 0) {
+      this.laserAnimFrame = requestAnimationFrame(this.animateLaser);
+    }
+    this.flushLive();
+  };
+
+  private drawLaserStrokes(ctx: CanvasRenderingContext2D): void {
+    if (this.laserStrokes.length === 0) return;
+    const now = Date.now();
+    const FADE_MS = 2000;
+    for (const s of this.laserStrokes) {
+      const age = now - s.createdAt;
+      const alpha = Math.max(0, 1 - age / FADE_MS);
+      if (alpha <= 0 || s.points.length < 2) continue;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) {
+        const prev = s.points[i - 1];
+        const curr = s.points[i];
+        const mx = (prev.x + curr.x) / 2;
+        const my = (prev.y + curr.y) / 2;
+        ctx.quadraticCurveTo(prev.x, prev.y, mx, my);
+      }
+      ctx.lineTo(s.points[s.points.length - 1].x, s.points[s.points.length - 1].y);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  private drawRemoteCursors(ctx: CanvasRenderingContext2D): void {
+    for (const [userId, data] of this.remoteCursors) {
+      const { user, cursor } = data;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cursor.x, cursor.y, 4 / this.camera.zoom, 0, Math.PI * 2);
+      ctx.fillStyle = user.color;
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5 / this.camera.zoom;
+      ctx.stroke();
+      ctx.font = `${10 / this.camera.zoom}px system-ui, sans-serif`;
+      ctx.fillStyle = user.color;
+      ctx.fillText(user.name, cursor.x + 8 / this.camera.zoom, cursor.y - 4 / this.camera.zoom);
+      ctx.restore();
+    }
+  }
+
   private setupCanvases(): void {
     [this.staticCanvas, this.liveCanvas].forEach(c => {
       c.width = this.width * this.dpr;
@@ -458,6 +526,7 @@ export class Blackboard implements BlackboardAPI {
     this.liveCanvas.addEventListener('pointercancel', this.onPointerUp);
     this.liveCanvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.liveCanvas.addEventListener('contextmenu', this.onContextMenu);
+    this.liveCanvas.addEventListener('dblclick', this.onDoubleClick);
     this.liveCanvas.addEventListener('dragover', this.boundHandleDragOver);
     this.liveCanvas.addEventListener('drop', this.boundHandleFileDrop);
     window.addEventListener('paste', this.boundHandleImagePaste);
@@ -476,6 +545,7 @@ export class Blackboard implements BlackboardAPI {
     this.liveCanvas.removeEventListener('pointercancel', this.onPointerUp);
     this.liveCanvas.removeEventListener('wheel', this.onWheel);
     this.liveCanvas.removeEventListener('contextmenu', this.onContextMenu);
+    this.liveCanvas.removeEventListener('dblclick', this.onDoubleClick);
     this.liveCanvas.removeEventListener('dragover', this.boundHandleDragOver);
     this.liveCanvas.removeEventListener('drop', this.boundHandleFileDrop);
     window.removeEventListener('paste', this.boundHandleImagePaste);
@@ -723,6 +793,20 @@ export class Blackboard implements BlackboardAPI {
       }
       return;
     }
+
+    if (this.activeTool === 'laser') {
+      this.isDrawing = true;
+      this.currentElement = {
+        id: uid(),
+        tool: 'laser',
+        points: [point],
+        color: '#ef4444',
+        width: this.strokeWidth,
+        opacity: 1,
+        createdAt: Date.now(),
+      } as Stroke;
+      return;
+    }
     
     if (this.activeTool === 'eraser') {
       if (this.pixelEraser) {
@@ -777,7 +861,7 @@ export class Blackboard implements BlackboardAPI {
   };
 
   private moveSingleElement(el: Element, orig: Element, dx: number, dy: number): void {
-    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'laser') {
       const s = el as Stroke;
       const o = orig as Stroke;
       s.points = o.points.map(p => ({ x: p.x + dx, y: p.y + dy, pressure: p.pressure }));
@@ -785,6 +869,10 @@ export class Blackboard implements BlackboardAPI {
       const t = el as TextElement;
       const o = orig as TextElement;
       t.position = { x: o.position.x + dx, y: o.position.y + dy };
+    } else if (el.tool === 'katex') {
+      const k = el as LaTeXElement;
+      const o = orig as LaTeXElement;
+      k.position = { x: o.position.x + dx, y: o.position.y + dy };
     } else if (el.tool === 'image') {
       const img = el as ImageElement;
       const o = orig as ImageElement;
@@ -811,7 +899,7 @@ export class Blackboard implements BlackboardAPI {
   }
 
   private getLocalBounds(el: Element): { x: number; y: number; w: number; h: number } {
-    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'laser') {
       const stroke = el as Stroke;
       if (stroke.points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -836,6 +924,10 @@ export class Blackboard implements BlackboardAPI {
     if (el.tool === 'image') {
       const img = el as ImageElement;
       return { x: img.position.x, y: img.position.y, w: img.width, h: img.height };
+    }
+    if (el.tool === 'katex') {
+      const k = el as LaTeXElement;
+      return { x: k.position.x, y: k.position.y, w: k.width ?? 200, h: k.height ?? 40 };
     }
     const s = el as Shape;
     const x = Math.min(s.start.x, s.end.x);
@@ -869,6 +961,54 @@ export class Blackboard implements BlackboardAPI {
       const orig = origMap.get(id);
       if (!el || !orig) continue;
       this.moveSingleElement(el, orig, dx, dy);
+    }
+    this.updateBoundArrows();
+  }
+
+  private updateBoundArrows(): void {
+    for (const el of this.elements) {
+      if (el.tool !== 'arrow' && el.tool !== 'line') continue;
+      const shape = el as Shape;
+      if (!shape.boundTo) continue;
+      const target = this.elements.find(e => e.id === shape.boundTo);
+      if (!target) { shape.boundTo = undefined; continue; }
+      const tb = this.getElementBounds(target);
+      const arrowBounds = this.getLocalBounds(shape);
+      const acx = (shape.start.x + shape.end.x) / 2;
+      const acy = (shape.start.y + shape.end.y) / 2;
+      const tcx = tb.x + tb.w / 2;
+      const tcy = tb.y + tb.h / 2;
+      if (acx < tcx) { shape.start.x = tb.x; shape.end.x = tb.x + tb.w; }
+      else { shape.start.x = tb.x + tb.w; shape.end.x = tb.x; }
+      if (acy < tcy) { shape.start.y = tb.y + tb.h; shape.end.y = tb.y; }
+      else { shape.start.y = tb.y; shape.end.y = tb.y + tb.h; }
+    }
+  }
+
+  private autoBindArrow(shape: Shape): void {
+    const edge = this.findNearestEdgePoint(shape.start, shape.id);
+    if (edge) {
+      const target = this.elements.find(e => {
+        if (e.id === shape.id) return false;
+        const b = this.getElementBounds(e);
+        return Math.hypot(edge.x - (b.x + b.w / 2), edge.y - (b.y + b.h / 2)) < Math.max(b.w, b.h);
+      });
+      if (target) {
+        shape.boundTo = target.id;
+        shape.start = edge;
+      }
+    }
+    const edgeEnd = this.findNearestEdgePoint(shape.end, shape.id);
+    if (edgeEnd) {
+      const target = this.elements.find(e => {
+        if (e.id === shape.id) return false;
+        const b = this.getElementBounds(e);
+        return Math.hypot(edgeEnd.x - (b.x + b.w / 2), edgeEnd.y - (b.y + b.h / 2)) < Math.max(b.w, b.h);
+      });
+      if (target) {
+        if (!shape.boundTo) shape.boundTo = target.id;
+        shape.end = edgeEnd;
+      }
     }
   }
 
@@ -1143,7 +1283,7 @@ export class Blackboard implements BlackboardAPI {
     if (!this.isDrawing || !this.currentElement) return;
     e.preventDefault();
 
-    if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
+    if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter' || this.currentElement.tool === 'laser') {
       const events = (e as any).getCoalescedEvents?.() ?? [e];
       for (const ce of events) {
         const p = this.getPoint(ce as PointerEvent);
@@ -1260,6 +1400,23 @@ export class Blackboard implements BlackboardAPI {
   if (!this.isDrawing || !this.currentElement) return;
   this.isDrawing = false;
 
+  if (this.currentElement.tool === 'laser') {
+    const laser = this.currentElement as Stroke;
+    if (laser.points.length >= 2) {
+      this.laserStrokes.push({
+        id: laser.id,
+        points: [...laser.points],
+        color: laser.color,
+        width: laser.width,
+        opacity: 1,
+        createdAt: Date.now(),
+      });
+      if (!this.laserAnimFrame) this.laserAnimFrame = requestAnimationFrame(this.animateLaser);
+    }
+    this.currentElement = null;
+    return;
+  }
+
   if (this.currentElement.tool === 'pen' || this.currentElement.tool === 'highlighter') {
     if ((this.currentElement as Stroke).points.length < 2) {
       const p = (this.currentElement as Stroke).points[0];
@@ -1273,6 +1430,9 @@ export class Blackboard implements BlackboardAPI {
     }
 
     this.elements.push(this.currentElement);
+    if (this.currentElement.tool === 'arrow' || this.currentElement.tool === 'line') {
+      this.autoBindArrow(this.currentElement as Shape);
+    }
     this.currentElement = null;
     this.flushLive();
     this.renderStatic();
@@ -1475,7 +1635,7 @@ export class Blackboard implements BlackboardAPI {
     const keyToolMap: Record<string, Tool> = {
       'v': 'select', 'h': 'hand', 'p': 'pen', 'm': 'highlighter',
       't': 'text', 'l': 'line', 'r': 'rect', 'o': 'circle',
-      'a': 'arrow', 'e': 'eraser'
+      'a': 'arrow', 'e': 'eraser', 'b': 'laser', 'n': 'diamond'
     };
 
     if ((e.ctrlKey || e.metaKey) && !['z','+','-','0','d','c','v','x','a','g',']','['].includes(e.key.toLowerCase())) {
@@ -1508,6 +1668,47 @@ export class Blackboard implements BlackboardAPI {
       }
     }
     this.showContextMenu(e.clientX, e.clientY);
+  };
+
+  private onDoubleClick = (e: MouseEvent): void => {
+    const point = this.getPoint(e as any);
+    const hit = this.hitTest(point);
+    if (hit && (hit.tool === 'rect' || hit.tool === 'circle' || hit.tool === 'diamond')) {
+      const shape = hit as Shape;
+      const bounds = this.getElementBounds(shape);
+      const cx = bounds.x + bounds.w / 2;
+      const cy = bounds.y + bounds.h / 2;
+      if (shape.label) {
+        const existingText = this.elements.find(el => el.tool === 'text' && (el as TextElement).content === shape.label);
+        if (existingText) {
+          this.startTextEdit((existingText as TextElement).position.x, (existingText as TextElement).position.y, existingText as TextElement);
+          return;
+        }
+      }
+      const world = this.screenToWorld(cx, cy);
+      this.startTextEdit(world.x, world.y);
+    } else if (hit && (hit.tool === 'line' || hit.tool === 'arrow')) {
+      const shape = hit as Shape;
+      const mx = (shape.start.x + shape.end.x) / 2;
+      const my = (shape.start.y + shape.end.y) / 2;
+      const label = prompt('Label for this line/arrow:', shape.label ?? '');
+      if (label !== null) {
+        this.pushUndo();
+        shape.label = label;
+        this.renderAll();
+        this.emit('change');
+      }
+    } else if (hit && hit.tool === 'katex') {
+      const k = hit as LaTeXElement;
+      const newLatex = prompt('Edit LaTeX:', k.latex);
+      if (newLatex !== null && newLatex !== k.latex) {
+        this.pushUndo();
+        k.latex = newLatex;
+        this.katexImageCache.clear();
+        this.renderAll();
+        this.emit('change');
+      }
+    }
   };
 
   private showContextMenu(clientX: number, clientY: number): void {
@@ -1818,6 +2019,8 @@ export class Blackboard implements BlackboardAPI {
     if (this.currentElement) this.drawElement(ctx, this.currentElement);
     this.drawSelectionIndicators(ctx);
     this.drawAlignmentGuides(ctx);
+    this.drawLaserStrokes(ctx);
+    this.drawRemoteCursors(ctx);
     if (this.marqueeStart && this.marqueeEnd) {
       const t = THEMES[this.theme];
       const x = Math.min(this.marqueeStart.x, this.marqueeEnd.x);
@@ -1909,12 +2112,15 @@ export class Blackboard implements BlackboardAPI {
       ctx.rotate(rotation);
       ctx.translate(-center.x, -center.y);
     }
-    if (el.tool === 'pen' || el.tool === 'eraser') {
+    if (el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') {
       this.drawFreehand(ctx, el as Stroke);
+    } else if (el.tool === 'laser') {
     } else if (el.tool === 'text') {
       this.drawText(ctx, el as TextElement);
     } else if (el.tool === 'image') {
       this.drawImage(ctx, el as ImageElement);
+    } else if (el.tool === 'katex') {
+      this.drawLaTeX(ctx, el as LaTeXElement);
     } else {
       this.drawShape(ctx, el as Shape);
     }
@@ -1992,6 +2198,44 @@ export class Blackboard implements BlackboardAPI {
     for (let i = 0; i < wrappedLines.length; i++) {
       ctx.fillText(wrappedLines[i], el.position.x, el.position.y + i * lineHeight);
     }
+  }
+
+  private drawLaTeX(ctx: CanvasRenderingContext2D, el: LaTeXElement): void {
+    const cacheKey = `${el.latex}|${el.fontSize}|${el.color}`;
+    let img = this.katexImageCache.get(cacheKey);
+    if (!img) {
+      const rendered = this.renderKaTeXToImage(el.latex, el.fontSize, el.color);
+      if (rendered) { img = rendered; this.katexImageCache.set(cacheKey, img); }
+    }
+    if (img && img.complete && img.naturalWidth > 0) {
+      const w = el.width ?? img.naturalWidth;
+      const h = el.height ?? img.naturalHeight;
+      ctx.drawImage(img, el.position.x, el.position.y, w, h);
+    } else {
+      ctx.fillStyle = el.color;
+      ctx.font = `${el.fontSize}px "Courier New", monospace`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(el.latex, el.position.x, el.position.y);
+    }
+  }
+
+  private renderKaTeXToImage(latex: string, fontSize: number, color: string): HTMLImageElement | null {
+    try {
+      const katex = (window as any).katex;
+      if (!katex) return null;
+      const html = katex.renderToString(latex, { throwOnError: false, displayMode: true });
+      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${fontSize * latex.length * 0.6}" height="${fontSize * 1.8}"><foreignObject width="100%" height="100%"><div xmlns="http://www.w3.org/1999/xhtml" style="font-size:${fontSize}px;color:${color};white-space:nowrap;">${html}</div></foreignObject></svg>`;
+      const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.src = url;
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        this.renderAll();
+      };
+      return img;
+    } catch { return null; }
   }
 
   private roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -2086,6 +2330,37 @@ export class Blackboard implements BlackboardAPI {
         ctx.moveTo(end.x, end.y);
         ctx.lineTo(end.x - headLen * Math.cos(angle + Math.PI / 6), end.y - headLen * Math.sin(angle + Math.PI / 6));
         ctx.stroke();
+        if (shape.label) {
+          const mx = (start.x + end.x) / 2;
+          const my = (start.y + end.y) / 2;
+          ctx.font = `${Math.max(12, width * 4)}px system-ui, sans-serif`;
+          ctx.fillStyle = color;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(shape.label, mx, my - 4);
+        }
+        break;
+      }
+      case 'diamond': {
+        const cx = (start.x + end.x) / 2;
+        const cy = (start.y + end.y) / 2;
+        const hw = Math.abs(end.x - start.x) / 2;
+        const hh = Math.abs(end.y - start.y) / 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - hh);
+        ctx.lineTo(cx + hw, cy);
+        ctx.lineTo(cx, cy + hh);
+        ctx.lineTo(cx - hw, cy);
+        ctx.closePath();
+        if (shape.filled) {
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.25 * shape.opacity;
+          ctx.fill();
+          ctx.globalAlpha = shape.opacity;
+        }
+        if (shape.dashPattern) ctx.setLineDash(shape.dashPattern);
+        ctx.stroke();
+        if (shape.dashPattern) ctx.setLineDash([]);
         break;
       }
     }
@@ -2197,6 +2472,34 @@ export class Blackboard implements BlackboardAPI {
           ctx.lineTo(end.x - headLen * Math.cos(angle - Math.PI / 6) + off(), end.y - headLen * Math.sin(angle - Math.PI / 6) + off());
           ctx.moveTo(end.x + off(), end.y + off());
           ctx.lineTo(end.x - headLen * Math.cos(angle + Math.PI / 6) + off(), end.y - headLen * Math.sin(angle + Math.PI / 6) + off());
+          ctx.stroke();
+          break;
+        }
+        case 'diamond': {
+          const dcx = (start.x + end.x) / 2;
+          const dcy = (start.y + end.y) / 2;
+          const hw = Math.abs(end.x - start.x) / 2;
+          const hh = Math.abs(end.y - start.y) / 2;
+          const dpts = [
+            { x: dcx, y: dcy - hh }, { x: dcx + hw, y: dcy },
+            { x: dcx, y: dcy + hh }, { x: dcx - hw, y: dcy },
+          ];
+          for (let i = 0; i < 4; i++) {
+            const a = dpts[i]; const b = dpts[(i + 1) % 4];
+            ctx.moveTo(a.x + off(), a.y + off());
+            for (let s = 1; s <= 4; s++) {
+              const t = s / 4;
+              ctx.lineTo(a.x + (b.x - a.x) * t + off(), a.y + (b.y - a.y) * t + off());
+            }
+          }
+          ctx.closePath();
+          if (shape.filled) {
+            ctx.fillStyle = color;
+            const savedAlpha = ctx.globalAlpha;
+            ctx.globalAlpha = 0.25 * shape.opacity;
+            ctx.fill();
+            ctx.globalAlpha = savedAlpha;
+          }
           ctx.stroke();
           break;
         }
@@ -2332,6 +2635,8 @@ export class Blackboard implements BlackboardAPI {
     else if (tool === 'text') cursor = 'text';
     else if (tool === 'eraser') cursor = 'cell';
     else if (tool === 'highlighter') cursor = 'crosshair';
+    else if (tool === 'laser') cursor = 'none';
+    else if (tool === 'diamond') cursor = 'crosshair';
     this.liveCanvas.style.cursor = cursor;
     this.updateToolbar();
     this.emit('toolchange');
@@ -2605,7 +2910,7 @@ export class Blackboard implements BlackboardAPI {
     const panel = document.createElement('div');
     panel.style.cssText = `background:${t.canvasBg};color:${t.gridLabelColor};border:1px solid ${t.gridColor};border-radius:12px;padding:20px 24px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6;`;
     const shortcuts = [
-      ['P','Pen'],['M','Highlighter'],['T','Text'],['L','Line'],['R','Rect'],['O','Circle'],['A','Arrow'],['E','Eraser'],['V','Select'],['H','Hand'],
+      ['P','Pen'],['M','Highlighter'],['T','Text'],['L','Line'],['R','Rect'],['O','Circle'],['A','Arrow'],['E','Eraser'],['V','Select'],['H','Hand'],['B','Laser'],['N','Diamond'],
       ['Space+Drag','Pan'],['Esc','Deselect / Cancel'],['Del','Delete selected'],
       ['Arrow keys','Nudge (Shift=10px)'],['Ctrl+Z','Undo'],['Ctrl+Y','Redo'],
       ['Ctrl+D','Duplicate'],['Ctrl+C','Copy'],['Ctrl+V','Paste'],['Ctrl+X','Cut'],['Ctrl+A','Select all'],
@@ -2807,13 +3112,14 @@ export class Blackboard implements BlackboardAPI {
       this.showToast('Invalid snapshot data');
       return;
     }
-    const validTools = new Set(['pen', 'eraser', 'highlighter', 'line', 'rect', 'circle', 'arrow', 'text', 'image']);
+    const validTools = new Set(['pen', 'eraser', 'highlighter', 'laser', 'line', 'rect', 'circle', 'arrow', 'diamond', 'text', 'image', 'katex']);
     const valid = snapshot.elements.filter((el: any) => {
       if (!el || typeof el.id !== 'string' || !validTools.has(el.tool)) return false;
-      if ((el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter') && !Array.isArray(el.points)) return false;
-      if ((el.tool === 'line' || el.tool === 'rect' || el.tool === 'circle' || el.tool === 'arrow') && (!el.start || !el.end)) return false;
+      if ((el.tool === 'pen' || el.tool === 'eraser' || el.tool === 'highlighter' || el.tool === 'laser') && !Array.isArray(el.points)) return false;
+      if ((el.tool === 'line' || el.tool === 'rect' || el.tool === 'circle' || el.tool === 'arrow' || el.tool === 'diamond') && (!el.start || !el.end)) return false;
       if (el.tool === 'text' && (!el.position || typeof el.content !== 'string')) return false;
       if (el.tool === 'image' && (!el.position || typeof el.src !== 'string')) return false;
+      if (el.tool === 'katex' && (!el.position || typeof el.latex !== 'string')) return false;
       return true;
     });
     this.elements = valid;
@@ -3203,6 +3509,22 @@ export class Blackboard implements BlackboardAPI {
       const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
       return `<g${rot}${op}><line x1="${s.start.x}" y1="${s.start.y}" x2="${s.end.x}" y2="${s.end.y}" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round"${dash}/><line x1="${s.end.x}" y1="${s.end.y}" x2="${ax1}" y2="${ay1}" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round"${dash}/><line x1="${s.end.x}" y1="${s.end.y}" x2="${ax2}" y2="${ay2}" stroke="${s.color}" stroke-width="${s.width}" stroke-linecap="round"${dash}/></g>`;
     }
+    if (el.tool === 'diamond') {
+      const s = el as Shape;
+      const dcx = (s.start.x + s.end.x) / 2;
+      const dcy = (s.start.y + s.end.y) / 2;
+      const hw = Math.abs(s.end.x - s.start.x) / 2;
+      const hh = Math.abs(s.end.y - s.start.y) / 2;
+      const fill = s.filled ? ` fill="${s.color}" fill-opacity="0.25"` : ' fill="none"';
+      const dash = s.dashPattern ? ` stroke-dasharray="${s.dashPattern.join(',')}"` : '';
+      const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
+      return `<polygon points="${dcx},${dcy - hh} ${dcx + hw},${dcy} ${dcx},${dcy + hh} ${dcx - hw},${dcy}" stroke="${s.color}" stroke-width="${s.width}"${fill}${dash}${rot}${op}/>`;
+    }
+    if (el.tool === 'katex') {
+      const k = el as LaTeXElement;
+      const rot = rotation !== 0 ? ` transform="rotate(${rotation * 180 / Math.PI}, ${this.getRotationCenter(el).x}, ${this.getRotationCenter(el).y})"` : '';
+      return `<text x="${k.position.x}" y="${k.position.y}" font-size="${k.fontSize}" font-family="'Courier New', monospace" fill="${k.color}" dominant-baseline="hanging"${rot}${op}>${k.latex.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</text>`;
+    }
     if (el.tool === 'text') {
       const t = el as TextElement;
       const lines = this.wordWrapTextForSVG(t.content, t.fontSize, t.width > 1 ? t.width : 300, t.fontFamily);
@@ -3242,6 +3564,194 @@ export class Blackboard implements BlackboardAPI {
       wrappedLines.push(currentLine);
     }
     return wrappedLines;
+  }
+
+  exportPDF(): void {
+    const c = document.createElement('canvas');
+    c.width = this.width * this.dpr;
+    c.height = this.height * this.dpr;
+    const ctx = c.getContext('2d')!;
+    ctx.scale(this.dpr, this.dpr);
+    ctx.fillStyle = THEMES[this.theme].canvasBg;
+    ctx.fillRect(0, 0, this.width, this.height);
+    for (const el of this.elements) this.drawElement(ctx, el);
+    c.toBlob(blob => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        const pdfW = this.width * 0.75;
+        const pdfH = this.height * 0.75;
+        const pdfParts: string[] = [];
+        pdfParts.push('%PDF-1.4');
+        const obj: string[] = [];
+        obj.push('1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj');
+        obj.push('2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj');
+        obj.push(`3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 ${pdfW} ${pdfH}]/Contents 4 0 R/Resources<</XObject<</Img 5 0 R>>>>>>endobj`);
+        const contentStream = `q ${pdfW} 0 0 ${pdfH} 0 0 cm /Img Do Q`;
+        obj.push(`4 0 obj<</Length ${contentStream.length}>>\nstream\n${contentStream}\nendstream\nendobj`);
+        const dataUrl = c.toDataURL('image/jpeg', 0.92);
+        const base64 = dataUrl.split(',')[1];
+        obj.push(`5 0 obj<</Type/XObject/Subtype/Image/Width ${c.width}/Height ${c.height}/ColorSpace/DeviceRGB/Length ${base64.length}/Filter/DCTDecode>>\nstream\n${base64}\nendstream\nendobj`);
+        let offset = 0;
+        const offsets: number[] = [];
+        for (const o of obj) {
+          offsets.push(offset);
+          offset += o.length + 1;
+        }
+        let pdf = obj.join('\n') + '\n';
+        const xrefOffset = pdf.length;
+        pdf += 'xref\n';
+        pdf += `0 ${obj.length + 1}\n`;
+        pdf += '0000000000 65535 f \n';
+        for (const off of offsets) {
+          pdf += String(off).padStart(10, '0') + ' 00000 n \n';
+        }
+        pdf += 'trailer\n';
+        pdf += `<</Size ${obj.length + 1}/Root 1 0 R>>\n`;
+        pdf += 'startxref\n';
+        pdf += `${xrefOffset}\n`;
+        pdf += '%%EOF';
+        const pdfBlob = new Blob([pdf], { type: 'application/pdf' });
+        const pdfUrl = URL.createObjectURL(pdfBlob);
+        const a = document.createElement('a');
+        a.href = pdfUrl; a.download = 'blackboard.pdf'; a.click();
+        URL.revokeObjectURL(pdfUrl);
+        URL.revokeObjectURL(url);
+      };
+      img.src = url;
+    }, 'image/png');
+  }
+
+  startPresentation(): void {
+    if (this.elements.length === 0) return;
+    this.presenterMode = true;
+    this.presenterStep = 0;
+    this.showPresenterView();
+    this.showToast('Presentation mode — use arrow keys or click to advance');
+  }
+
+  stopPresentation(): void {
+    this.presenterMode = false;
+    this.presenterStep = 0;
+    if (this.presenterOverlay) { this.presenterOverlay.remove(); this.presenterOverlay = null; }
+    this.renderAll();
+  }
+
+  isPresenting(): boolean { return this.presenterMode; }
+
+  presentNext(): void {
+    if (!this.presenterMode) return;
+    if (this.presenterStep < this.elements.length - 1) {
+      this.presenterStep++;
+      this.showPresenterView();
+    } else {
+      this.showToast('End of presentation');
+    }
+  }
+
+  presentPrev(): void {
+    if (!this.presenterMode) return;
+    if (this.presenterStep > 0) {
+      this.presenterStep--;
+      this.showPresenterView();
+    }
+  }
+
+  private showPresenterView(): void {
+    if (!this.presenterOverlay) {
+      this.presenterOverlay = document.createElement('div');
+      this.presenterOverlay.style.cssText = 'position:fixed;inset:0;z-index:3000;background:#000;display:flex;align-items:center;justify-content:center;';
+      this.presenterOverlay.addEventListener('click', (e) => {
+        if (e.target === this.presenterOverlay) this.presentNext();
+      });
+      this.presenterOverlay.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ') this.presentNext();
+        else if (e.key === 'ArrowLeft') this.presentPrev();
+        else if (e.key === 'Escape') this.stopPresentation();
+      });
+      document.body.appendChild(this.presenterOverlay);
+      this.presenterOverlay.tabIndex = 0;
+      this.presenterOverlay.focus();
+    }
+    const visible = this.elements.slice(0, this.presenterStep + 1);
+    const c = document.createElement('canvas');
+    c.width = this.width * this.dpr;
+    c.height = this.height * this.dpr;
+    c.style.cssText = 'max-width:95vw;max-height:90vh;object-fit:contain;';
+    const ctx = c.getContext('2d')!;
+    ctx.scale(this.dpr, this.dpr);
+    ctx.fillStyle = '#1e1e2e';
+    ctx.fillRect(0, 0, this.width, this.height);
+    for (const el of visible) this.drawElement(ctx, el);
+    this.presenterOverlay.innerHTML = '';
+    this.presenterOverlay.appendChild(c);
+    const counter = document.createElement('div');
+    counter.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:#888;font:14px system-ui;background:rgba(0,0,0,0.5);padding:4px 12px;border-radius:8px;';
+    counter.textContent = `${this.presenterStep + 1} / ${this.elements.length}`;
+    this.presenterOverlay.appendChild(counter);
+  }
+
+  insertLaTeX(latex: string): void {
+    const centerX = this.width / 2;
+    const centerY = this.height / 2;
+    const world = this.screenToWorld(centerX, centerY);
+    const el: LaTeXElement = {
+      id: uid(),
+      tool: 'katex',
+      position: world,
+      latex,
+      fontSize: 24,
+      color: this.strokeColor,
+      opacity: this.strokeOpacity,
+      createdAt: Date.now(),
+    };
+    this.pushUndo();
+    this.elements.push(el);
+    this.katexImageCache.clear();
+    this.renderAll();
+    this.emit('change');
+    this.showToast('LaTeX inserted — double-click to edit');
+  }
+
+  getCollabState(): CollabState | null { return this.collabState; }
+
+  connectCollaboration(adapter: CollabAdapter, roomId: string, userName: string): void {
+    this.collabAdapter = adapter;
+    const userId = uid();
+    const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
+    const color = colors[Math.floor(Math.random() * colors.length)];
+    const user: CollabUser = { id: userId, name: userName, color };
+    adapter.connect(roomId, user);
+    adapter.onElementsUpdate((elements) => {
+      this.elements = elements;
+      this.renderAll();
+      this.emit('change');
+    });
+    adapter.onCursorUpdate((uid, cursor) => {
+      const u = this.collabState?.users.find(u => u.id === uid);
+      if (u) this.remoteCursors.set(uid, { user: u, cursor });
+      this.flushLive();
+    });
+    adapter.onUserJoin((u) => {
+      if (this.collabState) this.collabState.users.push(u);
+      this.showToast(`${u.name} joined`);
+    });
+    adapter.onUserLeave((uid) => {
+      if (this.collabState) this.collabState.users = this.collabState.users.filter(u => u.id !== uid);
+      this.remoteCursors.delete(uid);
+      this.flushLive();
+    });
+    this.collabState = { connected: true, roomId, users: [user], localUser: user };
+    this.showToast('Connected to collaboration room');
+  }
+
+  disconnectCollaboration(): void {
+    this.collabAdapter?.disconnect();
+    this.collabAdapter = null;
+    this.collabState = null;
+    this.remoteCursors.clear();
+    this.flushLive();
   }
 
   destroy(): void {

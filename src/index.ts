@@ -7,6 +7,7 @@ export type {
   Stroke,
   Shape,
   TextElement,
+  LaTeXElement,
   ImageElement,
   GraphConfig,
   BlackboardOptions,
@@ -19,6 +20,9 @@ export type {
   BoundingBox,
   Viewport,
   SelectionBox,
+  CollabState,
+  CollabUser,
+  CollabAdapter,
 } from './types';
 
 export * from './integrations';

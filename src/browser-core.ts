@@ -7,6 +7,7 @@ export type {
   Stroke,
   Shape,
   TextElement,
+  LaTeXElement,
   GraphConfig,
   BlackboardOptions,
   Element,
@@ -14,5 +15,8 @@ export type {
   Viewport,
   BoundingBox,
   SelectionBox,
+  CollabState,
+  CollabUser,
+  CollabAdapter,
 } from './types';
 export { createToolbar, updateToolbarState } from './toolbar';
