@@ -195,6 +195,8 @@ export interface BlackboardAPI {
   setPixelEraser(enabled: boolean): void;
   getClipboard(): string;
   setClipboard(data: string): void;
+  exportSelectedSVG(): string;
+  exportSelectedPNG(): void;
 }
 
 export const FONT_FAMILIES = [
